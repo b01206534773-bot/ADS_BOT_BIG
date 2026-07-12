@@ -170,7 +170,7 @@ def _parse_proxy(proxy_str: str) -> Optional[str]:
     return None
 
 
-def _get_proxies(proxy: Optional[str]) -> Optional[dict]:
+def _get_proxies(self, proxy: Optional[str]) -> Optional[dict]:
     """تحويل البروكسي إلى صيغة httpx."""
     if not proxy:
         return None
