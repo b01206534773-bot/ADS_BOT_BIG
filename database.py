@@ -24,10 +24,21 @@ class DB:
 
     def _connect(self):
         if self.backend == 'postgres':
-            self.conn = psycopg2.connect(
-                os.environ['DATABASE_URL'],
-                cursor_factory=psycopg2.extras.RealDictCursor,
-            )
+            dsn = os.environ['DATABASE_URL']
+            connect_kwargs = {
+                'cursor_factory': psycopg2.extras.RealDictCursor,
+            }
+            if 'sslmode=' not in dsn and 'sslrootcert=' not in dsn:
+                connect_kwargs['sslmode'] = 'require'
+            try:
+                self.conn = psycopg2.connect(dsn, **connect_kwargs)
+            except Exception as exc:
+                print(f'Postgres connection failed, falling back to SQLite: {exc}')
+                self.backend = 'sqlite'
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                self.conn = sqlite3.connect(self.path, check_same_thread=False)
+                self.conn.row_factory = sqlite3.Row
+                return
         else:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.conn = sqlite3.connect(self.path, check_same_thread=False)
@@ -79,31 +90,6 @@ class DB:
                 key TEXT PRIMARY KEY,
                 value INTEGER NOT NULL DEFAULT 0
             )''')
-        self.conn.commit()
-
-    def init(self):
-        c = self.conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            custom_name TEXT,
-            joined_at TEXT NOT NULL,
-            is_removed INTEGER DEFAULT 0,
-            subscription_until TEXT
-        )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS redeem_codes (
-            code TEXT PRIMARY KEY,
-            label TEXT,
-            duration_hours INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            used_by INTEGER,
-            used_at TEXT
-        )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS stats (
-            key TEXT PRIMARY KEY,
-            value INTEGER NOT NULL DEFAULT 0
-        )''')
         self.conn.commit()
 
     def now(self) -> str:
