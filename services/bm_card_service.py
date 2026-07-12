@@ -15,7 +15,9 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 BM_BASE = 'https://business.facebook.com'
-GRAPHQL  = f'{BM_BASE}/api/graphql/'
+GRAPHQL = f'{BM_BASE}/api/graphql/'
+FB_BASE = 'https://www.facebook.com'
+IG_BASE = 'https://www.instagram.com'
 
 DEVICE_PROFILES = [
     {
@@ -34,10 +36,10 @@ def _parse_cookies(s: str) -> dict:
     تحليل الكوكيز من أي تنسيق:
       - semicolon-separated: a=1;b=2
       - newline-separated: a=1\nb=2
-      - comma-separated: a=1, b=2
       - with Cookie: prefix
-      - with URL-encoded values
       - JSON values inside cookies
+      - lines copied from devtools/network
+      - Set-Cookie like content
     """
     if not s or not isinstance(s, str):
         return {}
@@ -46,57 +48,61 @@ def _parse_cookies(s: str) -> dict:
     if not s:
         return {}
 
-    # إزالة prefix "Cookie:" لو موجود
     if s.lower().startswith('cookie:'):
         s = s[7:]
 
-    # استبدال newlines بـ ;
-    s = s.replace('\n', ';').replace('\r', '')
-
-    # إذا كان التنسيق JSON dict مباشر
     if s.startswith('{') and s.endswith('}'):
         try:
             parsed = json.loads(s)
             if isinstance(parsed, dict):
-                return {str(k).strip(): str(v).strip() for k, v in parsed.items()}
+                return {str(k).strip(): str(v).strip() for k, v in parsed.items() if str(k).strip()}
         except (json.JSONDecodeError, ValueError):
             pass
 
-    result = {}
-    # تقسيم على ; أولاً
-    parts = s.split(';')
+    s = s.replace('\r', '')
+    lines = [line.strip() for line in s.split('\n') if line.strip()]
+    if len(lines) > 1:
+        merged_parts: List[str] = []
+        for line in lines:
+            if ':' in line and '=' not in line:
+                continue
+            merged_parts.append(line)
+        s = '; '.join(merged_parts)
+
+    result: Dict[str, str] = {}
+    parts = [p.strip() for p in s.split(';') if p.strip()]
+    skip_attrs = {
+        'secure', 'httponly', 'samesite', 'path', 'domain', 'expires',
+        'max-age', 'partitioned', 'priority', 'version'
+    }
 
     for part in parts:
-        part = part.strip()
-        if not part:
+        if not part or '=' not in part:
             continue
 
-        # تجاهل attributes زي Secure, HttpOnly, SameSite, Path, Domain, Expires
-        skip_attrs = ['secure', 'httponly', 'samesite', 'path', 'domain', 'expires',
-                      'max-age', 'partitioned', 'priority']
-        lower_part = part.lower().split('=')[0].strip()
-        if lower_part in skip_attrs:
-            continue
-
-        if '=' not in part:
-            continue
-
-        # نستخدم partition عشان نتعامل مع = داخل القيمة
-        key, sep, value = part.partition('=')
+        key, _, value = part.partition('=')
         key = key.strip()
         value = value.strip()
-
         if not key:
             continue
 
-        # URL decode للقيمة (ممكن تكون encoded من المتصفح)
+        lower_key = key.lower()
+        if lower_key in skip_attrs:
+            continue
+
+        if lower_key == 'set-cookie':
+            inner_key, _, inner_value = value.partition('=')
+            if inner_key and inner_value:
+                key, value = inner_key.strip(), inner_value.strip()
+                lower_key = key.lower()
+            else:
+                continue
+
         try:
-            decoded = urllib.parse.unquote(value)
-            value = decoded
+            value = urllib.parse.unquote(value)
         except Exception:
             pass
 
-        # إزالة quotes حول القيمة
         if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
             value = value[1:-1]
 
@@ -119,12 +125,10 @@ def _parse_proxy(proxy_str: str) -> Optional[str]:
 
     proxy_str = proxy_str.strip()
 
-    # إذا كان هناك @، فهو بصيغة user:pass@host:port
     if '@' in proxy_str:
         try:
             credentials, host_port = proxy_str.rsplit('@', 1)
             if ':' in host_port:
-                # تحقق من أن المنفذ صحيح
                 host, port_str = host_port.rsplit(':', 1)
                 port = int(port_str)
                 if 1 <= port <= 65535:
@@ -133,11 +137,9 @@ def _parse_proxy(proxy_str: str) -> Optional[str]:
             pass
         return None
 
-    # إذا لم يكن هناك @، نحاول تحليل الأجزاء
     parts = proxy_str.split(':')
 
     if len(parts) == 2:
-        # host:port
         host, port_str = parts
         try:
             port = int(port_str)
@@ -147,7 +149,6 @@ def _parse_proxy(proxy_str: str) -> Optional[str]:
             pass
 
     elif len(parts) == 4:
-        # host:port:username:password
         host, port_str, user, password = parts
         try:
             port = int(port_str)
@@ -157,11 +158,9 @@ def _parse_proxy(proxy_str: str) -> Optional[str]:
             pass
 
     elif len(parts) >= 3:
-        # نحاول التحقق من آخر جزء، هل هو منفذ صحيح؟
         try:
             port = int(parts[-1])
             if 1 <= port <= 65535:
-                # كل شيء ما عدا الآخر هو host (قد يحتوي على أكثر من :)
                 host = ':'.join(parts[:-1])
                 return f"http://{host}:{port}"
         except (ValueError, IndexError):
@@ -170,117 +169,84 @@ def _parse_proxy(proxy_str: str) -> Optional[str]:
     return None
 
 
-def _get_proxies(self, proxy: Optional[str]) -> Optional[dict]:
+def _get_proxies(proxy: Optional[str]) -> Optional[dict]:
     """تحويل البروكسي إلى صيغة httpx."""
     if not proxy:
         return None
-
     parsed_proxy = _parse_proxy(proxy)
     if not parsed_proxy:
         return None
-
     return {'http://': parsed_proxy, 'https://': parsed_proxy}
 
 
 def _is_business_manager_response(text: str) -> bool:
-    html = text.lower()
-    return 'business.facebook.com' in html or 'fb_dtsg' in html or 'dtsginitialdata' in html
+    html = (text or '').lower()
+    return (
+        'business.facebook.com' in html
+        or 'fb_dtsg' in html
+        or 'dtsginitialdata' in html
+        or 'business_settings' in html
+        or 'meta business suite' in html
+    )
 
 
 def _validate_cookie_keys(cookies_dict: dict) -> dict:
-    """التحقق من وجود المفاتيح الأساسية والحساسة."""
+    """التحقق المرن من وجود مفاتيح جلسة أساسية لفيس/إنستا/ميتا."""
+    has_c_user = 'c_user' in cookies_dict and bool(cookies_dict['c_user'])
+    has_xs = 'xs' in cookies_dict and bool(cookies_dict['xs'])
+    has_sessionid = 'sessionid' in cookies_dict and bool(cookies_dict['sessionid'])
+    has_ds_user_id = 'ds_user_id' in cookies_dict and bool(cookies_dict['ds_user_id'])
+
     result = {
-        'has_c_user': 'c_user' in cookies_dict and bool(cookies_dict['c_user']),
-        'has_xs': 'xs' in cookies_dict and bool(cookies_dict['xs']),
+        'has_c_user': has_c_user,
+        'has_xs': has_xs,
         'has_datr': 'datr' in cookies_dict and bool(cookies_dict['datr']),
         'has_sb': 'sb' in cookies_dict and bool(cookies_dict['sb']),
+        'has_sessionid': has_sessionid,
+        'has_ds_user_id': has_ds_user_id,
         'total_keys': len(cookies_dict),
     }
-    result['looks_valid'] = result['has_c_user'] and result['has_xs']
+    result['looks_valid'] = (has_c_user and has_xs) or (has_sessionid and has_ds_user_id) or has_sessionid or has_c_user
     return result
 
 
-async def verify_bm_cookies(cookies_str: str, proxy: Optional[str] = None) -> Dict[str, Any]:
-    """تحقق من أن الكوكيز صالحة وأن الصفحة فعلاً من Business Manager."""
-    parsed = _parse_cookies(cookies_str)
-
-    # التحقق الأساسي من المفاتيح المهمة
-    validation = _validate_cookie_keys(parsed)
-    if not validation['looks_valid']:
-        missing = []
-        if not validation['has_c_user']:
-            missing.append('c_user')
-        if not validation['has_xs']:
-            missing.append('xs')
-        return {
-            'success': False,
-            'error': f'الكوكيز ناقصة - مفاتيح أساسية مفقودة: {", ".join(missing)}. '
-                     f'تأكد من نسخ الكوكيز كاملة من المتصفح (Developer Tools → Network → Cookies)'
-        }
-
-    svc = BMCardService(cookies_str, proxy)
-    targets = [BM_BASE, f'{BM_BASE}/billing/']
-    last_error = None
-
-    for target in targets:
-        try:
-            async with svc._client() as c:
-                resp = await c.get(target, headers=svc._headers(), cookies=svc.cookies_dict)
-                text = resp.text
-                url = str(resp.url).lower()
-
-                if any(path in url for path in ['login.php', '/login', '/checkpoint']):
-                    last_error = 'تم إعادة التوجيه لصفحة تسجيل الدخول أو تحقق الأمان - الكوكيز منتهية'
-                    continue
-                if resp.status_code != 200:
-                    last_error = f'رد HTTP غير متوقع: {resp.status_code}'
-                    continue
-                if 'business.facebook.com' not in url and not _is_business_manager_response(text):
-                    last_error = 'الرد ليس صفحة Business Manager واضحة'
-                    continue
-
-                tok = _extract_dtsg(text)
-                if tok:
-                    return {'success': True, 'dtsg': tok, 'url': str(resp.url)}
-                return {'success': True, 'url': str(resp.url)}
-        except Exception as e:
-            last_error = f'خطأ عند التحقق من الكوكيز: {str(e)}'
-
-    return {
-        'success': False,
-        'error': 'فشل التحقق من الكوكيز. ' + (last_error or 'الكوكيز قد تكون منتهية أو غير صحيحة'),
-    }
-
-
 def _extract_dtsg(html: str) -> Optional[str]:
-    """استخراج DTSG من HTML - محاولات متعددة."""
     if not html or len(html) < 100:
         return None
 
+    candidates = [html]
+    try:
+        decoded = html.encode('utf-8').decode('unicode_escape')
+        if decoded and decoded != html:
+            candidates.append(decoded)
+    except Exception:
+        pass
+
     patterns = [
-        # الأنماط الشائعة
         r'"DTSGInitialData"[^}]*?"token":"([^"]+)"',
         r'"DTSGInitialData":\s*\{[^}]*?"token":"([^"]+)"',
+        r'\["DTSGInitialData",\s*\[],\s*\{[^}]*?"token":"([^"]+)"',
         r'require\(\s*["\']DTSGInitialData["\']\s*\)\.token\s*[:=]?\s*["\']([^"\']+)["\']',
         r'DTSGInitialData\.token\s*=\s*["\']([^"\']+)["\']',
         r'name="fb_dtsg"\s+value="([^"]+)"',
-        r'"fb_dtsg":"([^"]+)"',
         r'name="fb_dtsg" value="([^"]+)"',
-        # أنماط إضافية
-        r'fb_dtsg["\']?\s*[=:]\s*["\']?([a-zA-Z0-9_-]+)',
-        r'DTSG["\']?\s*[=:]\s*["\']?([a-zA-Z0-9_-]+)',
-        # في JSON
+        r'"fb_dtsg":"([^"]+)"',
+        r'"fb_dtsg"\s*:\s*\{[^}]*?"value"\s*:\s*"([^"]+)"',
+        r'fb_dtsg["\']?\s*[=:]\s*["\']?([A-Za-z0-9:_-]{20,})',
+        r'DTSG["\']?\s*[=:]\s*["\']?([A-Za-z0-9:_-]{20,})',
         r'"dtsg":"([^"]+)"',
-        r'"token":"([a-zA-Z0-9_-]{24,})"',
+        r'"token":"([A-Za-z0-9:_-]{20,})"',
     ]
 
-    for pattern in patterns:
-        match = re.search(pattern, html, re.IGNORECASE)
-        if match:
-            token = match.group(1)
-            if len(token) >= 20:  # DTSG عادة يكون طويل
+    for candidate in candidates:
+        for pattern in patterns:
+            match = re.search(pattern, candidate, re.IGNORECASE | re.DOTALL)
+            if not match:
+                continue
+            token = match.group(1).strip()
+            token = token.replace('\\/', '/').replace('\\u003A', ':')
+            if len(token) >= 20:
                 return token
-
     return None
 
 
@@ -328,48 +294,149 @@ def _extract_bm_context(html: str) -> Dict[str, Optional[str]]:
 
     return context
 
+
+async def _fetch_dtsg_with_playwright(cookies_dict: dict, proxy: Optional[str] = None) -> Dict[str, Any]:
+    try:
+        from playwright.async_api import async_playwright
+    except Exception:
+        return {'success': False, 'error': 'PLAYWRIGHT_NOT_INSTALLED'}
+
+    parsed_proxy = _parse_proxy(proxy) if proxy else None
+
+    browser_proxy = None
+    if parsed_proxy:
+        browser_proxy = {'server': parsed_proxy}
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, proxy=browser_proxy)
+            context = await browser.new_context(ignore_https_errors=True)
+
+            cookie_items = []
+            for name, value in cookies_dict.items():
+                cookie_items.append({
+                    'name': name,
+                    'value': value,
+                    'domain': '.facebook.com',
+                    'path': '/',
+                    'httpOnly': False,
+                    'secure': True,
+                })
+                cookie_items.append({
+                    'name': name,
+                    'value': value,
+                    'domain': '.business.facebook.com',
+                    'path': '/',
+                    'httpOnly': False,
+                    'secure': True,
+                })
+                cookie_items.append({
+                    'name': name,
+                    'value': value,
+                    'domain': '.instagram.com',
+                    'path': '/',
+                    'httpOnly': False,
+                    'secure': True,
+                })
+
+            await context.add_cookies(cookie_items)
+            page = await context.new_page()
+            await page.goto(f'{BM_BASE}/billing/', wait_until='domcontentloaded', timeout=60000)
+            await page.wait_for_timeout(5000)
+
+            current_url = page.url.lower()
+            html = await page.content()
+
+            token = _extract_dtsg(html)
+            if not token:
+                token = await page.evaluate("""
+                    () => {
+                        const fromInput = document.querySelector('input[name="fb_dtsg"]');
+                        if (fromInput && fromInput.value) return fromInput.value;
+                        const html = document.documentElement ? document.documentElement.outerHTML : '';
+                        return html || null;
+                    }
+                """)
+                if token and '<html' in token.lower():
+                    token = _extract_dtsg(token)
+
+            if not token:
+                possible = await page.evaluate("""
+                    () => {
+                        try {
+                            if (window.require) {
+                                const mods = ['DTSGInitialData', 'DTSGInitData'];
+                                for (const m of mods) {
+                                    try {
+                                        const v = window.require(m);
+                                        if (v && v.token) return v.token;
+                                    } catch (e) {}
+                                }
+                            }
+                        } catch (e) {}
+                        return null;
+                    }
+                """)
+                if possible:
+                    token = possible
+
+            await browser.close()
+
+            if token:
+                return {'success': True, 'dtsg': token, 'url': current_url, 'source': 'playwright'}
+
+            if 'login' in current_url or 'checkpoint' in current_url:
+                return {'success': False, 'error': 'تم تحويل الجلسة إلى login/checkpoint داخل المتصفح'}
+
+            return {
+                'success': False,
+                'error': 'تعذر استخراج DTSG حتى عبر Playwright رغم فتح الصفحة',
+                'details': {'url': current_url, 'has_bm': _is_business_manager_response(html)}
+            }
+    except Exception as e:
+        return {'success': False, 'error': f'Playwright error: {str(e)}'}
+
+
 class BMCardService:
     def __init__(self, cookies_str: str, proxy: Optional[str] = None,
                  dtsg: Optional[str] = None, user_id: Optional[str] = None):
-        self.cookies_str  = cookies_str
+        self.cookies_str = cookies_str
         self.cookies_dict = _parse_cookies(cookies_str)
-        self.proxies      = _get_proxies(proxy)
-        self._dtsg: Optional[str] = dtsg  # يمكن تمريره مباشرة
-        self._user_id: str = user_id or self.cookies_dict.get('c_user', '')  # أو من الكوكيز
+        self.proxies = _get_proxies(proxy)
+        self.proxy = proxy
+        self._dtsg: Optional[str] = dtsg
+        self._user_id: str = user_id or self.cookies_dict.get('c_user') or self.cookies_dict.get('ds_user_id', '')
         self._profile = random.choice(DEVICE_PROFILES)
 
     def _headers(self) -> dict:
         return {
-            'User-Agent':            self._profile['ua'],
-            'Accept':                'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language':       self._profile['lang'],
-            'Accept-Encoding':       'gzip, deflate, br',
-            'Content-Type':          'application/x-www-form-urlencoded',
-            'Origin':                BM_BASE,
-            'Referer':               f'{BM_BASE}/billing/',
-            'Sec-Fetch-Dest':        'document',
-            'Sec-Fetch-Mode':        'navigate',
-            'Sec-Fetch-Site':        'same-origin',
-            'Cache-Control':         'max-age=0',
-            'X-Requested-With':      'XMLHttpRequest',
-            'Pragma':                'no-cache',
+            'User-Agent': self._profile['ua'],
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': self._profile['lang'],
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Origin': BM_BASE,
+            'Referer': f'{BM_BASE}/billing/',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin',
+            'Cache-Control': 'max-age=0',
+            'X-Requested-With': 'XMLHttpRequest',
+            'Pragma': 'no-cache',
         }
 
     def _client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            timeout=30,
-            proxies=self.proxies,
-            follow_redirects=True,
-        )
+        return httpx.AsyncClient(timeout=30, proxies=self.proxies, follow_redirects=True)
 
     async def fetch_dtsg(self) -> Dict[str, Any]:
-        """جلب DTSG token من Business Manager بعد التحقق من صحة الجلسة."""
         endpoints = [
             f'{BM_BASE}/',
             f'{BM_BASE}/overview',
             f'{BM_BASE}/billing/',
             f'{BM_BASE}/business_locations',
             f'{BM_BASE}/business_settings',
+            f'{FB_BASE}/',
+            f'{IG_BASE}/',
         ]
         session_expired_url_indicators = ['login', 'checkpoint']
         session_expired_text_indicators = [
@@ -378,6 +445,7 @@ class BMCardService:
         ]
 
         checked = []
+        saw_business_page = False
 
         try:
             async with self._client() as c:
@@ -385,12 +453,14 @@ class BMCardService:
                     resp = await c.get(endpoint, headers=self._headers(), cookies=self.cookies_dict)
                     text = resp.text
                     url_str = str(resp.url).lower()
+                    has_bm = 'business.facebook.com' in url_str or _is_business_manager_response(text)
+                    saw_business_page = saw_business_page or has_bm
 
                     checked.append({
                         'endpoint': endpoint,
                         'status': resp.status_code,
                         'final_url': url_str,
-                        'has_bm': 'business.facebook.com' in url_str or 'business.facebook.com' in text.lower(),
+                        'has_bm': has_bm,
                     })
 
                     if any(indicator in url_str for indicator in session_expired_url_indicators):
@@ -412,29 +482,45 @@ class BMCardService:
                             'user_id': self._user_id,
                             'business_id': ctx['business_id'],
                             'ad_account_id': ctx['ad_account_id'],
+                            'source': 'httpx',
                         }
 
-                if any(item['has_bm'] for item in checked):
-                    return {
-                        'success': False,
-                        'error': 'لم نتمكن من استخراج DTSG من صفحات Business Manager. تأكد من أن الكوكيز تحتوي على جلسة صالحة.',
-                        'details': checked,
-                    }
+            pw_result = await _fetch_dtsg_with_playwright(self.cookies_dict, proxy=self.proxy)
+            if pw_result.get('success'):
+                self._dtsg = pw_result['dtsg']
+                return {
+                    'success': True,
+                    'endpoint': pw_result.get('url', 'playwright'),
+                    'dtsg': self._dtsg,
+                    'user_id': self._user_id,
+                    'business_id': None,
+                    'ad_account_id': None,
+                    'source': 'playwright',
+                }
 
+            if saw_business_page:
+                extra = pw_result.get('error') if isinstance(pw_result, dict) else ''
                 return {
                     'success': False,
-                    'error': 'فشل الوصول إلى Business Manager باستخدام هذه الكوكيز. قد تكون الجلسة غير نشطة أو أن الكوكيز غير كاملة.',
+                    'error': 'فتحنا صفحات Business Manager لكن تعذر استخراج DTSG من HTML الخام ومن المتصفح. ' + extra,
                     'details': checked,
                 }
+
+            return {
+                'success': False,
+                'error': 'فشل الوصول إلى Business Manager باستخدام هذه الجلسة. قد تكون الجلسة غير مكتملة أو تحتاج دخول business.facebook.com مرة واحدة.',
+                'details': checked,
+            }
         except Exception as e:
             error_str = str(e)
             if 'timeout' in error_str.lower():
-                return {'success': False, 'error': 'انتهاء المهلة الزمنية - قد يكون البروكسي بطيئاً'}
-            elif 'proxy' in error_str.lower() or 'connection' in error_str.lower():
-                return {'success': False, 'error': f'مشكلة في الاتصال/البروكسي: {error_str[:100]}'}
+                return {'success': False, 'error': 'انتهاء المهلة الزمنية - قد يكون البروكسي بطيئاً أو الرد معلقاً'}
+            if 'proxy' in error_str.lower() or 'connection' in error_str.lower():
+                return {'success': False, 'error': f'مشكلة في الاتصال/البروكسي: {error_str[:120]}'}
             return {'success': False, 'error': f'خطأ في الاتصال: {error_str}'}
+
     async def _gql(self, friendly: str, doc_id: str, variables: dict,
-                     bm_id: str, ad_id: str) -> Dict[str, Any]:
+                   bm_id: str, ad_id: str) -> Dict[str, Any]:
         query_params = {}
         if friendly == 'BillingHubPaymentMethodsViewQuery':
             query_params = {'_callFlowletID': '0', '_triggerFlowletID': '2596'}
@@ -460,17 +546,13 @@ class BMCardService:
         body = urllib.parse.urlencode(body_dict)
         try:
             async with self._client() as c:
-                resp = await c.post(url, headers=self._headers(),
-                                    cookies=self.cookies_dict, content=body)
-
-                # تحقق من حالة الاستجابة
+                resp = await c.post(url, headers=self._headers(), cookies=self.cookies_dict, content=body)
                 if resp.status_code == 401:
                     return {'success': False, 'error': 'الكوكيز منتهية - تحتاج تسجيل دخول من جديد (401)'}
-                elif resp.status_code == 403:
+                if resp.status_code == 403:
                     return {'success': False, 'error': 'الوصول مرفوض - قد تحتاج إلى سلطات إضافية (403)'}
-                elif resp.status_code >= 500:
+                if resp.status_code >= 500:
                     return {'success': False, 'error': f'خطأ الخادم ({resp.status_code})'}
-
                 try:
                     data = resp.json()
                     return {'success': True, 'data': data}
@@ -489,22 +571,21 @@ class BMCardService:
         if not r['success']:
             return r
         bm_ad_id = (r['data'].get('data', {})
-                              .get('business', {})
-                              .get('billing_payment_account', {})
-                              .get('id'))
+                             .get('business', {})
+                             .get('billing_payment_account', {})
+                             .get('id'))
         if not bm_ad_id:
             return {'success': False, 'error': 'لم يتم العثور على حساب الدفع في البيزنس'}
         return {'success': True, 'bm_ad_id': bm_ad_id}
 
-    async def get_payment_methods(self, bm_id: str, ad_id: str,
-                                   bm_ad_id: str) -> Dict[str, Any]:
+    async def get_payment_methods(self, bm_id: str, ad_id: str, bm_ad_id: str) -> Dict[str, Any]:
         r = await self._gql(
             'BillingHubPaymentMethodsBusinessSectionQuery',
             '24585166657733775',
             {
-                'paymentAccountID':       bm_ad_id,
+                'paymentAccountID': bm_ad_id,
                 'billable_account_types': ['FB_ADS', 'WHATSAPP'],
-                'connected_asset_limit':  26,
+                'connected_asset_limit': 26,
                 'connected_asset_detail_limit': 5,
             },
             bm_id, ad_id,
@@ -512,8 +593,7 @@ class BMCardService:
         if not r['success']:
             return r
         try:
-            methods = (r['data']['data']['payment_account']
-                                        ['billing_payment_methods'])
+            methods = (r['data']['data']['payment_account']['billing_payment_methods'])
             cards = [m['credential'] for m in methods]
             if not cards:
                 return {'success': False, 'error': 'لا توجد بطاقات في الحافظة'}
@@ -521,8 +601,7 @@ class BMCardService:
         except Exception as e:
             return {'success': False, 'error': f'خطأ في تحليل البطاقات: {e}'}
 
-    async def make_default(self, bm_id: str, ad_id: str,
-                            credential_id: str) -> Dict[str, Any]:
+    async def make_default(self, bm_id: str, ad_id: str, credential_id: str) -> Dict[str, Any]:
         def _rnd():
             return f"upl_{int(time.time()*1000)}_{random.randint(100000, 999999)}"
 
@@ -532,20 +611,20 @@ class BMCardService:
             {
                 'input': {
                     'payment_legacy_account_id': ad_id,
-                    'shared_biz_credential_id':  credential_id,
+                    'shared_biz_credential_id': credential_id,
                     'upl_logging_data': {
-                        'context':           'billingaddpm',
-                        'credential_id':     credential_id,
-                        'credential_type':   'CREDIT_CARD',
-                        'entry_point':       'BILLING_HUB',
-                        'external_flow_id':  _rnd(),
-                        'target_name':       'BillingSaveSharedBizCardStateMutation',
-                        'user_session_id':   _rnd(),
+                        'context': 'billingaddpm',
+                        'credential_id': credential_id,
+                        'credential_type': 'CREDIT_CARD',
+                        'entry_point': 'BILLING_HUB',
+                        'external_flow_id': _rnd(),
+                        'target_name': 'BillingSaveSharedBizCardStateMutation',
+                        'user_session_id': _rnd(),
                         'wizard_config_name': 'SELECT_PAYMENT_METHOD',
-                        'wizard_name':       'ADD_PM_PUX_EP',
+                        'wizard_name': 'ADD_PM_PUX_EP',
                         'wizard_session_id': f'upl_wizard_{_rnd()}',
                     },
-                    'actor_id':          self._user_id,
+                    'actor_id': self._user_id,
                     'client_mutation_id': str(int(time.time() * 1000)),
                 },
                 'includeCreateNewFromOldFragment': False,
@@ -560,39 +639,50 @@ class BMCardService:
         return {'success': True}
 
 
-async def get_bm_cards(cookies: str, bm_id: str, ad_id: str,
-                       proxy: Optional[str] = None) -> Dict[str, Any]:
-    """جلب البطاقات من Business Manager مع محاولة التعامل مع مشاكل البروكسي والكوكيز."""
+async def verify_bm_cookies(cookies_str: str, proxy: Optional[str] = None) -> Dict[str, Any]:
+    parsed = _parse_cookies(cookies_str)
+    validation = _validate_cookie_keys(parsed)
+    if not parsed:
+        return {'success': False, 'error': 'تعذر تحليل الكوكيز المرسلة'}
 
-    # المحاولة الأولى: مع البروكسي إن وجد
+    svc = BMCardService(cookies_str, proxy)
+    result = await svc.fetch_dtsg()
+    if result.get('success'):
+        return {
+            'success': True,
+            'dtsg': result.get('dtsg'),
+            'url': result.get('endpoint') or result.get('url'),
+            'source': result.get('source', 'unknown'),
+            'validation': validation,
+        }
+
+    return {
+        'success': False,
+        'error': result.get('error', 'فشل التحقق من الجلسة'),
+        'details': result.get('details', []),
+        'validation': validation,
+    }
+
+
+async def get_bm_cards(cookies: str, bm_id: str, ad_id: str, proxy: Optional[str] = None) -> Dict[str, Any]:
     svc = BMCardService(cookies, proxy)
     r = await svc.fetch_dtsg()
 
     if not r['success']:
-        # إذا كان هناك خطأ وتم استخدام بروكسي، جرب بدون بروكسي
         if proxy:
-            # الخطأ قد يكون بسبب البروكسي أو الكوكيز
-            # جرب بدون بروكسي أولاً
             svc_no_proxy = BMCardService(cookies, proxy=None)
             r = await svc_no_proxy.fetch_dtsg()
-
             if r['success']:
-                # نجحت بدون بروكسي، استمر
                 r = await svc_no_proxy.get_billing_account_id(bm_id, ad_id)
                 if not r['success']:
                     return r
                 return await svc_no_proxy.get_payment_methods(bm_id, ad_id, r['bm_ad_id'])
-            else:
-                # فشلت أيضاً بدون بروكسي، فالمشكلة في الكوكيز
-                return {
-                    'success': False,
-                    'error': f"{r['error']}\n\n💡 <b>ملاحظة:</b> حاولنا بدون بروكسي أيضاً، المشكلة في الكوكيز"
-                }
-        else:
-            # بدون بروكسي والفشل موجود، إذاً الكوكيز مشكلة
-            return r
+            return {
+                'success': False,
+                'error': f"{r['error']}\n\n💡 <b>ملاحظة:</b> حاولنا بدون بروكسي أيضاً"
+            }
+        return r
 
-    # نجحت مع البروكسي/بدون بروكسي، استمر
     r = await svc.get_billing_account_id(bm_id, ad_id)
     if not r['success']:
         return r
@@ -600,9 +690,9 @@ async def get_bm_cards(cookies: str, bm_id: str, ad_id: str,
 
 
 async def warm_bm_cards(cookies: str, bm_id: str, ad_id: str,
-                         cards: List[dict], card_ids: List[str],
-                         interval_secs: int,
-                         proxy: Optional[str] = None) -> Dict[str, Any]:
+                        cards: List[dict], card_ids: List[str],
+                        interval_secs: int,
+                        proxy: Optional[str] = None) -> Dict[str, Any]:
     svc = BMCardService(cookies, proxy)
     r = await svc.fetch_dtsg()
     if not r['success']:
@@ -612,24 +702,24 @@ async def warm_bm_cards(cookies: str, bm_id: str, ad_id: str,
     results = []
     for cid in card_ids:
         card = id_to_card.get(cid, {})
-        name  = card.get('card_association_name', 'Card')
+        name = card.get('card_association_name', 'Card')
         last4 = card.get('last_four_digits', '****')
         label = f"{name} •••• {last4}"
 
         res = await svc.make_default(bm_id, ad_id, cid)
         results.append({
-            'label':   label,
+            'label': label,
             'success': res['success'],
-            'error':   res.get('error', ''),
+            'error': res.get('error', ''),
         })
         if interval_secs > 0 and cid != card_ids[-1]:
             await asyncio.sleep(interval_secs)
 
-    success_count = sum(1 for r in results if r['success'])
-    fail_count    = len(results) - success_count
+    success_count = sum(1 for item in results if item['success'])
+    fail_count = len(results) - success_count
     return {
-        'success':       True,
-        'results':       results,
+        'success': True,
+        'results': results,
         'success_count': success_count,
-        'fail_count':    fail_count,
+        'fail_count': fail_count,
     }
