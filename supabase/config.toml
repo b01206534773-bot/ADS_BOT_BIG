@@ -1,0 +1,11 @@
+[db]
+shadow_port = 54320
+port = 54322
+schema = "public"
+junction = "ignore"
+
+[api]
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
