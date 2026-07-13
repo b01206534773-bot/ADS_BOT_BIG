@@ -93,9 +93,7 @@ async def delete_user(request):
 
 
 async def get_codes(request):
-    rows  = db.conn.execute(
-        'SELECT * FROM redeem_codes ORDER BY created_at DESC LIMIT 100'
-    ).fetchall()
+    rows = db.list_recent_codes(100)
     codes = [dict(r) for r in rows]
     return json_resp({'codes': codes})
 

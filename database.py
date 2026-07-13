@@ -8,6 +8,13 @@ import psycopg2
 import psycopg2.extras
 
 
+def normalize_database_url(dsn: str) -> str:
+    dsn = (dsn or '').strip()
+    if dsn.startswith('postgres://'):
+        return 'postgresql://' + dsn[len('postgres://'):]
+    return dsn
+
+
 def normalize_query(query: str, backend: str) -> str:
     if backend == 'postgres':
         return query.replace('?', '%s')
@@ -22,9 +29,20 @@ class DB:
         self._connect()
         self.init()
 
+    def _execute(self, query: str, params=()):
+        cursor = self.conn.cursor()
+        cursor.execute(normalize_query(query, self.backend), params)
+        return cursor
+
+    def _fetchone(self, query: str, params=()):
+        return self._execute(query, params).fetchone()
+
+    def _fetchall(self, query: str, params=()):
+        return self._execute(query, params).fetchall()
+
     def _connect(self):
         if self.backend == 'postgres':
-            dsn = os.environ['DATABASE_URL']
+            dsn = normalize_database_url(os.environ['DATABASE_URL'])
             connect_kwargs = {
                 'cursor_factory': psycopg2.extras.RealDictCursor,
             }
@@ -32,17 +50,20 @@ class DB:
                 connect_kwargs['sslmode'] = 'require'
             try:
                 self.conn = psycopg2.connect(dsn, **connect_kwargs)
+                print('Database backend: postgres')
             except Exception as exc:
                 print(f'Postgres connection failed, falling back to SQLite: {exc}')
                 self.backend = 'sqlite'
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 self.conn = sqlite3.connect(self.path, check_same_thread=False)
                 self.conn.row_factory = sqlite3.Row
+                print(f'Database backend: sqlite ({self.path})')
                 return
         else:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.conn = sqlite3.connect(self.path, check_same_thread=False)
             self.conn.row_factory = sqlite3.Row
+            print(f'Database backend: sqlite ({self.path})')
 
     def init(self):
         c = self.conn.cursor()
@@ -118,11 +139,11 @@ class DB:
         self.conn.commit()
 
     def remove_user(self, user_id: int):
-        self.conn.execute(normalize_query('UPDATE users SET is_removed=1 WHERE user_id=?', self.backend), (user_id,))
+        self._execute('UPDATE users SET is_removed=1 WHERE user_id=?', (user_id,))
         self.conn.commit()
 
     def set_custom_name(self, user_id: int, name: str):
-        self.conn.execute(normalize_query('UPDATE users SET custom_name=? WHERE user_id=?', self.backend), (name, user_id))
+        self._execute('UPDATE users SET custom_name=? WHERE user_id=?', (name, user_id))
         self.conn.commit()
 
     def set_subscription_hours(self, user_id: int, hours: int):
@@ -139,7 +160,7 @@ class DB:
 
         until = base + timedelta(hours=hours)
         if self.backend == 'postgres':
-            self.conn.execute(
+            self._execute(
                 '''INSERT INTO users(user_id, username, first_name, joined_at, is_removed, subscription_until)
                    VALUES(%s,%s,%s,%s,0,%s)
                    ON CONFLICT(user_id) DO UPDATE SET
@@ -148,7 +169,7 @@ class DB:
                 (user_id, '', '', self.now(), until.isoformat(timespec='seconds'))
             )
         else:
-            self.conn.execute(
+            self._execute(
                 '''INSERT INTO users(user_id, username, first_name, joined_at, is_removed, subscription_until)
                    VALUES(?,?,?,?,0,?)
                    ON CONFLICT(user_id) DO UPDATE SET
@@ -160,27 +181,27 @@ class DB:
         return until
 
     def get_user(self, user_id: int):
-        return self.conn.execute(normalize_query('SELECT * FROM users WHERE user_id=?', self.backend), (user_id,)).fetchone()
+        return self._fetchone('SELECT * FROM users WHERE user_id=?', (user_id,))
 
     def all_active_users(self) -> Iterable[sqlite3.Row]:
-        return self.conn.execute(normalize_query('SELECT * FROM users WHERE is_removed=0', self.backend)).fetchall()
+        return self._fetchall('SELECT * FROM users WHERE is_removed=0')
 
     def create_code(self, code: str, duration_hours: int, label: str = ''):
-        self.conn.execute(
-            normalize_query('INSERT INTO redeem_codes(code,label,duration_hours,created_at) VALUES(?,?,?,?)', self.backend),
+        self._execute(
+            'INSERT INTO redeem_codes(code,label,duration_hours,created_at) VALUES(?,?,?,?)',
             (code, label, duration_hours, self.now())
         )
         self.conn.commit()
 
     def get_code(self, code: str):
-        return self.conn.execute(normalize_query('SELECT * FROM redeem_codes WHERE code=?', self.backend), (code,)).fetchone()
+        return self._fetchone('SELECT * FROM redeem_codes WHERE code=?', (code,))
 
     def use_code(self, code: str, user_id: int) -> Optional[int]:
         row = self.get_code(code)
         if not row or row['used_by']:
             return None
-        self.conn.execute(
-            normalize_query('UPDATE redeem_codes SET used_by=?, used_at=? WHERE code=?', self.backend),
+        self._execute(
+            'UPDATE redeem_codes SET used_by=?, used_at=? WHERE code=?',
             (user_id, self.now(), code)
         )
         self.conn.commit()
@@ -188,26 +209,29 @@ class DB:
 
     def inc(self, key: str, amount: int = 1):
         if self.backend == 'postgres':
-            self.conn.execute(
+            self._execute(
                 'INSERT INTO stats(key,value) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET value=stats.value+%s',
                 (key, amount, amount)
             )
         else:
-            self.conn.execute(
+            self._execute(
                 'INSERT INTO stats(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=value+?',
                 (key, amount, amount)
             )
         self.conn.commit()
 
     def get_stat(self, key: str) -> int:
-        row = self.conn.execute(normalize_query('SELECT value FROM stats WHERE key=?', self.backend), (key,)).fetchone()
+        row = self._fetchone('SELECT value FROM stats WHERE key=?', (key,))
         return int(row['value']) if row else 0
 
+    def list_recent_codes(self, limit: int = 10):
+        return self._fetchall('SELECT * FROM redeem_codes ORDER BY created_at DESC LIMIT ?', (limit,))
+
     def counts(self):
-        users = self.conn.execute(normalize_query('SELECT COUNT(*) c FROM users WHERE is_removed=0', self.backend)).fetchone()['c']
-        removed = self.conn.execute(normalize_query('SELECT COUNT(*) c FROM users WHERE is_removed=1', self.backend)).fetchone()['c']
-        codes = self.conn.execute(normalize_query('SELECT COUNT(*) c FROM redeem_codes', self.backend)).fetchone()['c']
-        unused = self.conn.execute(normalize_query('SELECT COUNT(*) c FROM redeem_codes WHERE used_by IS NULL', self.backend)).fetchone()['c']
+        users = self._fetchone('SELECT COUNT(*) AS c FROM users WHERE is_removed=0')['c']
+        removed = self._fetchone('SELECT COUNT(*) AS c FROM users WHERE is_removed=1')['c']
+        codes = self._fetchone('SELECT COUNT(*) AS c FROM redeem_codes')['c']
+        unused = self._fetchone('SELECT COUNT(*) AS c FROM redeem_codes WHERE used_by IS NULL')['c']
         return dict(
             users=users,
             removed=removed,

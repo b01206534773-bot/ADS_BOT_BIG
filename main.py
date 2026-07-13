@@ -1213,9 +1213,7 @@ async def admin_remove_user(message: Message, state: FSMContext):
 async def admin_list_codes(call: CallbackQuery, state: FSMContext):
     if not await ensure_admin_access(call, state):
         return
-    rows = db.conn.execute(
-        'SELECT * FROM redeem_codes ORDER BY created_at DESC LIMIT 10'
-    ).fetchall()
+    rows = db.list_recent_codes(10)
     if not rows:
         await call.message.edit_text("لا توجد أكواد.", reply_markup=back_admin())
         await call.answer()
