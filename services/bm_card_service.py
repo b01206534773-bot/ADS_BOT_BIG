@@ -450,42 +450,55 @@ class BMCardService:
         try:
             async with self._client() as c:
                 for endpoint in endpoints:
-                    resp = await c.get(endpoint, headers=self._headers(), cookies=self.cookies_dict)
-                    text = resp.text
-                    url_str = str(resp.url).lower()
-                    has_bm = 'business.facebook.com' in url_str or _is_business_manager_response(text)
-                    saw_business_page = saw_business_page or has_bm
+                    try:
+                        resp = await c.get(endpoint, headers=self._headers(), cookies=self.cookies_dict)
+                        text = resp.text
+                        url_str = str(resp.url).lower()
+                        has_bm = 'business.facebook.com' in url_str or _is_business_manager_response(text)
+                        saw_business_page = saw_business_page or has_bm
 
-                    checked.append({
-                        'endpoint': endpoint,
-                        'status': resp.status_code,
-                        'final_url': url_str,
-                        'has_bm': has_bm,
-                    })
-
-                    if any(indicator in url_str for indicator in session_expired_url_indicators):
-                        continue
-                    if any(indicator in text.lower() for indicator in session_expired_text_indicators):
-                        continue
-                    if resp.status_code != 200:
-                        continue
-
-                    ctx = _extract_bm_context(text)
-                    if ctx['dtsg']:
-                        self._dtsg = ctx['dtsg']
-                        if ctx['user_id']:
-                            self._user_id = ctx['user_id']
-                        return {
-                            'success': True,
+                        checked.append({
                             'endpoint': endpoint,
-                            'dtsg': self._dtsg,
-                            'user_id': self._user_id,
-                            'business_id': ctx['business_id'],
-                            'ad_account_id': ctx['ad_account_id'],
-                            'source': 'httpx',
-                        }
+                            'status': resp.status_code,
+                            'final_url': url_str,
+                            'has_bm': has_bm,
+                        })
 
-            pw_result = await _fetch_dtsg_with_playwright(self.cookies_dict, proxy=self.proxy)
+                        if any(indicator in url_str for indicator in session_expired_url_indicators):
+                            continue
+                        if any(indicator in text.lower() for indicator in session_expired_text_indicators):
+                            continue
+                        if resp.status_code != 200:
+                            continue
+
+                        ctx = _extract_bm_context(text)
+                        if ctx['dtsg']:
+                            self._dtsg = ctx['dtsg']
+                            if ctx['user_id']:
+                                self._user_id = ctx['user_id']
+                            return {
+                                'success': True,
+                                'endpoint': endpoint,
+                                'dtsg': self._dtsg,
+                                'user_id': self._user_id,
+                                'business_id': ctx['business_id'],
+                                'ad_account_id': ctx['ad_account_id'],
+                                'source': 'httpx',
+                            }
+                    except Exception as exc:
+                        checked.append({
+                            'endpoint': endpoint,
+                            'status': 'error',
+                            'final_url': '',
+                            'has_bm': False,
+                            'error': str(exc)[:200],
+                        })
+                        continue
+
+            pw_result = await asyncio.wait_for(
+                _fetch_dtsg_with_playwright(self.cookies_dict, proxy=self.proxy),
+                timeout=90
+            )
             if pw_result.get('success'):
                 self._dtsg = pw_result['dtsg']
                 return {
@@ -511,13 +524,19 @@ class BMCardService:
                 'error': 'فشل الوصول إلى Business Manager باستخدام هذه الجلسة. قد تكون الجلسة غير مكتملة أو تحتاج دخول business.facebook.com مرة واحدة.',
                 'details': checked,
             }
+        except asyncio.TimeoutError:
+            return {
+                'success': False,
+                'error': 'انتهاء المهلة الزمنية أثناء استخراج DTSG - قد تكون الجلسة ثقيلة أو البروكسي بطيئاً',
+                'details': checked,
+            }
         except Exception as e:
             error_str = str(e)
             if 'timeout' in error_str.lower():
-                return {'success': False, 'error': 'انتهاء المهلة الزمنية - قد يكون البروكسي بطيئاً أو الرد معلقاً'}
+                return {'success': False, 'error': 'انتهاء المهلة الزمنية - قد يكون البروكسي بطيئاً أو الرد معلقاً', 'details': checked}
             if 'proxy' in error_str.lower() or 'connection' in error_str.lower():
-                return {'success': False, 'error': f'مشكلة في الاتصال/البروكسي: {error_str[:120]}'}
-            return {'success': False, 'error': f'خطأ في الاتصال: {error_str}'}
+                return {'success': False, 'error': f'مشكلة في الاتصال/البروكسي: {error_str[:120]}', 'details': checked}
+            return {'success': False, 'error': f'خطأ في الاتصال: {error_str}', 'details': checked}
 
     async def _gql(self, friendly: str, doc_id: str, variables: dict,
                    bm_id: str, ad_id: str) -> Dict[str, Any]:

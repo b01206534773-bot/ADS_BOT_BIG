@@ -666,8 +666,43 @@ async def bm_cookies_input(message: Message, state: FSMContext):
     )
 
     from services.bm_card_service import verify_bm_cookies
-    validation_result = await verify_bm_cookies(cookies_raw, proxy=proxy)
-    await analyzing_msg.delete()
+    try:
+        validation_result = await asyncio.wait_for(
+            verify_bm_cookies(cookies_raw, proxy=proxy),
+            timeout=120
+        )
+    except asyncio.TimeoutError:
+        try:
+            await analyzing_msg.edit_text(
+                "❌ <b>انتهت مهلة التحقق من الكوكيز</b>\n\n"
+                "التحقق استغرق وقتاً أطول من المتوقع.\n"
+                "💡 جرّب بدون بروكسي أو استخدم كوكيز أحدث.",
+                reply_markup=back_home()
+            )
+        except Exception:
+            await message.answer(
+                "❌ <b>انتهت مهلة التحقق من الكوكيز</b>\n\n"
+                "💡 جرّب بدون بروكسي أو استخدم كوكيز أحدث.",
+                reply_markup=back_home()
+            )
+        return
+    except Exception as exc:
+        try:
+            await analyzing_msg.edit_text(
+                f"❌ <b>حصل خطأ أثناء التحقق من الكوكيز</b>\n\n<code>{str(exc)[:300]}</code>",
+                reply_markup=back_home()
+            )
+        except Exception:
+            await message.answer(
+                f"❌ <b>حصل خطأ أثناء التحقق من الكوكيز</b>\n\n<code>{str(exc)[:300]}</code>",
+                reply_markup=back_home()
+            )
+        return
+
+    try:
+        await analyzing_msg.delete()
+    except Exception:
+        pass
 
     if not validation_result['success']:
         # تحليل نوع الخطأ لإعطاء اقتراحات محددة
