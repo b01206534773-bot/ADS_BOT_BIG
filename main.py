@@ -1,4 +1,5 @@
 import asyncio
+import html
 import os
 import sys
 import uuid
@@ -689,12 +690,12 @@ async def bm_cookies_input(message: Message, state: FSMContext):
     except Exception as exc:
         try:
             await analyzing_msg.edit_text(
-                f"❌ <b>حصل خطأ أثناء التحقق من الكوكيز</b>\n\n<code>{str(exc)[:300]}</code>",
+                f"❌ <b>حصل خطأ أثناء التحقق من الكوكيز</b>\n\n<code>{html.escape(str(exc)[:300])}</code>",
                 reply_markup=back_home()
             )
         except Exception:
             await message.answer(
-                f"❌ <b>حصل خطأ أثناء التحقق من الكوكيز</b>\n\n<code>{str(exc)[:300]}</code>",
+                f"❌ <b>حصل خطأ أثناء التحقق من الكوكيز</b>\n\n<code>{html.escape(str(exc)[:300])}</code>",
                 reply_markup=back_home()
             )
         return
@@ -706,7 +707,7 @@ async def bm_cookies_input(message: Message, state: FSMContext):
 
     if not validation_result['success']:
         # تحليل نوع الخطأ لإعطاء اقتراحات محددة
-        error_msg = validation_result['error']
+        error_msg = html.escape(str(validation_result['error']))
         suggestions = ""
 
         if 'ناقصة' in error_msg or 'مفقودة' in error_msg.lower():
@@ -783,7 +784,7 @@ async def bm_ad_id_input(message: Message, state: FSMContext):
     )
 
     if not result['success']:
-        error_msg = result['error']
+        error_msg = html.escape(str(result['error']))
         suggestions = ""
         proxy_used = data.get('bm_proxy')
         
