@@ -1,0 +1,4 @@
+[build]
+# Playwright dependencies
+nixpacks.nixpkgs = ["libxcb", "libx11", "libxrandr", "libxinerama", "libxi", "libxext", "libxcursor", "libxkbcommon", "libxkbraw", "mesa", "libdrm", "libgbm", "gcc", "pkg-config", "fontconfig", "freetype", "expat", "libdbus", "nss", "nspr", "cups", "libatk", "at-spi2-core", "libcairo", "pango", "glib", "glibc", "alsa-lib"]
+
