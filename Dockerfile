@@ -11,8 +11,6 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxcursor1 \
     libxkbcommon0 \
-    libxkbraw1 \
-    libxkbfile1 \
     # Graphics rendering
     libglib2.0-0 \
     libdrm2 \
@@ -25,15 +23,10 @@ RUN apt-get update && apt-get install -y \
     # System libraries
     dbus \
     libnss3 \
-    libnssutil3 \
-    libsmime3 \
     libnspr4 \
-    libgdk-pixbuf2.0-0 \
     libgtk-3-0 \
     # Audio
     libasound2 \
-    # X11 extras
-    xvfb \
     # Build tools
     build-essential \
     # Cleanup
@@ -44,7 +37,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright browsers
-RUN playwright install chromium
+RUN python -m playwright install chromium
 
 COPY . .
 
