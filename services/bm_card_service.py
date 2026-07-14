@@ -5,11 +5,16 @@ bm_card_service.py
 from __future__ import annotations
 
 import asyncio
+import glob
 import json
+import os
 import random
 import re
+import subprocess
+import sys
 import time
 import urllib.parse
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -210,6 +215,46 @@ def _validate_cookie_keys(cookies_dict: dict) -> dict:
     return result
 
 
+def _probe_playwright_browser() -> bool:
+    """التحقق مما إذا كان Chromium الخاص بـ Playwright موجودًا بالفعل."""
+    browser_cache = os.environ.get('PLAYWRIGHT_BROWSERS_PATH')
+    candidate_dirs = []
+    if browser_cache:
+        candidate_dirs.append(Path(browser_cache))
+    candidate_dirs.extend([
+        Path.home() / '.cache' / 'ms-playwright',
+        Path('/root/.cache/ms-playwright'),
+    ])
+
+    for directory in candidate_dirs:
+        if not directory.exists():
+            continue
+        for candidate in glob.glob(str(directory / 'chromium-*' / 'chrome-linux' / 'chrome')):
+            if os.path.exists(candidate):
+                return True
+        for candidate in glob.glob(str(directory / 'chromium-*' / 'chrome-linux' / 'chrome-wrapper')):
+            if os.path.exists(candidate):
+                return True
+    return False
+
+
+def _ensure_playwright_browser() -> bool:
+    """تثبيت Chromium الخاص بـ Playwright إذا كان الملف التنفيذي مفقودًا."""
+    try:
+        if _probe_playwright_browser():
+            return True
+
+        subprocess.run(
+            [sys.executable, '-m', 'playwright', 'install', 'chromium'],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return _probe_playwright_browser()
+    except Exception:
+        return False
+
+
 def _extract_dtsg(html: str) -> Optional[str]:
     if not html or len(html) < 100:
         return None
@@ -394,7 +439,14 @@ async def _fetch_dtsg_with_playwright(cookies_dict: dict, proxy: Optional[str] =
                 'details': {'url': current_url, 'has_bm': _is_business_manager_response(html)}
             }
     except Exception as e:
-        return {'success': False, 'error': f'Playwright error: {str(e)}'}
+        error_text = str(e)
+        if 'Executable doesn\'t exist' in error_text or 'Please run the following command to download new browsers' in error_text:
+            if _ensure_playwright_browser():
+                try:
+                    return await _fetch_dtsg_with_playwright(cookies_dict, proxy=proxy)
+                except Exception as retry_exc:
+                    return {'success': False, 'error': f'Playwright error after browser install: {str(retry_exc)}'}
+        return {'success': False, 'error': f'Playwright error: {error_text}'}
 
 
 class BMCardService:
