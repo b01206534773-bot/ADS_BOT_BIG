@@ -114,11 +114,11 @@ def get_proxies(proxy: Optional[str]) -> Optional[dict]:
 # ─────────────────────────────────────────────────────
 
 class FacebookAPIClient:
-    """عميل Facebook Graph API — يعمل بالكوكيز مع Fingerprint كامل"""
+    """عميل Facebook Graph API — يعمل بالتوكن مع Fingerprint كامل"""
 
-    def __init__(self, cookies: str, proxy: Optional[str] = None):
-        self.cookies_str  = cookies
-        self.cookies_dict = parse_cookies(cookies)
+    def __init__(self, access_token: str, proxy: Optional[str] = None):
+        self.access_token = access_token
+        self.proxy        = proxy
         self.proxy        = proxy
         self.proxies      = get_proxies(proxy)
         self.base_url     = f'{FB_GRAPH_API}/{FB_API_VERSION}'
@@ -150,6 +150,12 @@ class FacebookAPIClient:
         """طلب HTTP مع معالجة ردود non-JSON وأخطاء الشبكة."""
         url     = f'{self.base_url}/{endpoint}'
         headers = self._get_headers(rotate=rotate_fp)
+        
+        # إضافة التوكن كبارامتر أو في الهيدر
+        params = kwargs.get('params', {})
+        params['access_token'] = self.access_token
+        kwargs['params'] = params
+        
         try:
             async with httpx.AsyncClient(
                 timeout=60,
@@ -159,7 +165,6 @@ class FacebookAPIClient:
                 resp = await client.request(
                     method, url,
                     headers=headers,
-                    cookies=self.cookies_dict,
                     **kwargs
                 )
 
@@ -218,7 +223,7 @@ class FacebookAPIClient:
         """تحقق من صلاحية الوصول لحساب الإعلانات."""
         r = await self._request(
             'GET', f'act_{ad_account_id}',
-            params={'fields': 'id,name,account_status,currency'}
+            params={'fields': 'id,name,account_status,currency,access_status'}
         )
         if not r['success']:
             return r
@@ -498,10 +503,10 @@ class FacebookAPIClient:
 #  دوال مساعدة
 # ─────────────────────────────────────────────────────
 
-async def fetch_page_posts(cookies: str, page_id: str,
+async def fetch_page_posts(access_token: str, page_id: str,
                            proxy: Optional[str] = None,
                            limit: int = 10) -> Dict[str, Any]:
-    client = FacebookAPIClient(cookies, proxy)
+    client = FacebookAPIClient(access_token, proxy)
     return await client.get_page_posts(page_id, limit)
 
 
@@ -654,7 +659,7 @@ async def _run_ad_core(
 
 async def run_standard_ad(data: dict) -> Dict[str, Any]:
     """إعلان رابط بوست — نشر نشط"""
-    client        = FacebookAPIClient(data['cookies'], data.get('proxy'))
+    client        = FacebookAPIClient(data['access_token'], data.get('proxy'))
     campaign_name = f"Boost - {data['post_id'][:8]}"
     return await _run_ad_core(
         client, data, campaign_name,
@@ -664,7 +669,7 @@ async def run_standard_ad(data: dict) -> Dict[str, Any]:
 
 async def run_standard_ad_then_pause(data: dict) -> Dict[str, Any]:
     """إعلان رابط بوست — نشر ثم إيقاف"""
-    client        = FacebookAPIClient(data['cookies'], data.get('proxy'))
+    client        = FacebookAPIClient(data['access_token'], data.get('proxy'))
     campaign_name = f"Boost - {data['post_id'][:8]}"
     result = await _run_ad_core(
         client, data, campaign_name,
@@ -679,7 +684,7 @@ async def run_standard_ad_then_pause(data: dict) -> Dict[str, Any]:
 
 async def run_dark_post_ad(data: dict) -> Dict[str, Any]:
     """Dark Post — نشر نشط"""
-    client        = FacebookAPIClient(data['cookies'], data.get('proxy'))
+    client        = FacebookAPIClient(data['access_token'], data.get('proxy'))
     page_id       = data['page_id']
     campaign_name = f"DarkPost - {page_id[:8]}"
     image_hash    = None
@@ -700,7 +705,7 @@ async def run_dark_post_ad(data: dict) -> Dict[str, Any]:
 
 async def run_dark_post_ad_then_pause(data: dict) -> Dict[str, Any]:
     """Dark Post — نشر ثم إيقاف"""
-    client        = FacebookAPIClient(data['cookies'], data.get('proxy'))
+    client        = FacebookAPIClient(data['access_token'], data.get('proxy'))
     page_id       = data['page_id']
     campaign_name = f"DarkPost - {page_id[:8]}"
     image_hash    = None
@@ -724,7 +729,7 @@ async def run_dark_post_ad_then_pause(data: dict) -> Dict[str, Any]:
 
 async def run_partner_ship_ad(data: dict) -> Dict[str, Any]:
     """Partnership Ad — نشر نشط"""
-    client        = FacebookAPIClient(data['cookies'], data.get('proxy'))
+    client        = FacebookAPIClient(data['access_token'], data.get('proxy'))
     campaign_name = f"PartnerShip - {data['ad_account_id'][:8]}"
     return await _run_ad_core(
         client, data, campaign_name,
@@ -736,7 +741,7 @@ async def run_partner_ship_ad(data: dict) -> Dict[str, Any]:
 
 async def run_partner_ship_ad_then_pause(data: dict) -> Dict[str, Any]:
     """Partnership Ad — نشر ثم إيقاف"""
-    client        = FacebookAPIClient(data['cookies'], data.get('proxy'))
+    client        = FacebookAPIClient(data['access_token'], data.get('proxy'))
     campaign_name = f"PartnerShip - {data['ad_account_id'][:8]}"
     result = await _run_ad_core(
         client, data, campaign_name,

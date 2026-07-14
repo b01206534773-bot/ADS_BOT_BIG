@@ -86,16 +86,27 @@ class DarkPostGate(BaseGate):
         await call.message.edit_text("🔽 <b>اختر البروكسي</b>", reply_markup=proxy_selection_keyboard())
 
     async def handle_cookies(self, message: Message, state: FSMContext):
-        is_valid, error = self.validate_cookies(message.text)
+        cookies = message.text
+        is_valid, error = self.validate_cookies(cookies)
         if not is_valid:
             await message.answer(error, reply_markup=back_home())
             return
-        await state.update_data(cookies=message.text.strip())
+        
+        data = await state.get_data()
+        proxy = data.get('proxy')
+        
+        # استخراج التوكن
+        await message.answer("⏳ جاري استخراج التوكن من الكوكيز...")
+        success, token, error = await self.extract_token(cookies, proxy)
+        if not success:
+            await message.answer(f"❌ فشل استخراج التوكن:\n{error}")
+            return
+            
+        await state.update_data(cookies=cookies, access_token=token)
+        await message.answer("✅ تم استخراج التوكن بنجاح!")
         await state.set_state(AdGateStates.waiting_ad_account_id)
         await message.answer(
-            "✅ <b>تم حفظ الكوكيز</b>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "🔽 <b>الخطوة 3:</b> أدخل Ad Account ID",
+            "🔢 <b>الخطوة 3:</b> أدخل Ad Account ID",
             reply_markup=back_home()
         )
 
@@ -233,6 +244,13 @@ class DarkPostGate(BaseGate):
 
     async def handle_confirm(self, call: CallbackQuery, state: FSMContext):
         if call.data == 'confirm:yes':
+            data = await state.get_data()
+            
+            # التأكد من وجود التوكن
+            if not data.get('access_token'):
+                await call.message.answer("❌ خطأ: التوكن غير موجود")
+                return
+                
             await state.set_state(AdGateStates.waiting_activate)
             await call.message.edit_text(
                 "🚀 <b>جاهز للتشغيل!</b>\n\n"

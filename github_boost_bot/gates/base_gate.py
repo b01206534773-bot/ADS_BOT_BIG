@@ -43,6 +43,17 @@ class BaseGate(ABC):
         if not found:
             return False, "❌ الكوكيز لا يحتوي على بيانات فيسبوك صحيحة\n(يجب أن يحتوي على c_user أو xs أو datr)"
         return True, None
+        
+    async def extract_token(self, cookies: str, proxy: Optional[str]) -> Tuple[bool, Optional[str], Optional[str]]:
+        """استخراج التوكن باستخدام token_extractor"""
+        from services.token_extractor import extract_token
+        try:
+            token_result = await extract_token(cookies, proxy)
+            if token_result.get("success"):
+                return True, token_result.get("eaa_token"), None
+            return False, None, token_result.get("error", "فشل غير معروف في استخراج التوكن")
+        except Exception as e:
+            return False, None, f"خطأ تقني: {str(e)}"
 
     def validate_ad_account_id(self, account_id: str) -> Tuple[bool, Optional[str]]:
         if not account_id:
@@ -181,6 +192,7 @@ class BaseGate(ABC):
             "",
             f"🌐 <b>البروكسي:</b> {data.get('proxy') or 'بدون'}",
             f"🍪 <b>الكوكيز:</b> {'✅ موجود' if data.get('cookies') else '❌ غير موجود'}",
+            f"🔑 <b>التوكن:</b> {'✅ صالح' if data.get('access_token') else '❌ غير موجود'}",
             f"🔢 <b>Account ID:</b> {data.get('ad_account_id', 'غير محدد')}",
         ]
         if self.gate_type == 'standard_ad':
