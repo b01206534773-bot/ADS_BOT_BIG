@@ -31,7 +31,7 @@ from services.proxy_manager import ProxyManager
 from gates.standard_ad_gate import StandardAdGate
 from gates.dark_post_gate import DarkPostGate
 from gates.partner_ship_gate import PartnerShipGate
-from ui_helpers import send_ui, reply_ui, clear_keep
+from ui_helpers import send_ui, reply_ui, update_ui_call, clear_keep
 
 TOKEN        = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 ADMIN_PASS   = 'Nemo@1986'
@@ -63,7 +63,6 @@ redis_url = os.environ.get('REDIS_URL', '')
 storage = RedisStorage.from_url(redis_url) if redis_url else MemoryStorage()
 dp  = Dispatcher(storage=storage)
 
-# ─── جدول الجلسات النشطة: user_id → session_token ───
 _sessions: dict[int, str] = {}
 
 
@@ -94,6 +93,7 @@ async def _check_session(call: CallbackQuery, state: FSMContext) -> bool:
         return False
     return True
 
+
 def menu_for(user_id: int):
     return main_menu(GATE_NAMES, is_subscribed(db.get_user(user_id)), SUPPORT_URL)
 
@@ -112,20 +112,17 @@ def _is_admin_user(user_id: int) -> bool:
 async def ensure_admin_access(event, state: FSMContext) -> bool:
     user_id = event.from_user.id
     if not _is_admin_user(user_id):
-        if hasattr(event, 'answer'):
-            try:
-                await event.answer('⛔ غير مصرح لك باستخدام لوحة الأدمن.', show_alert=True)
-            except TypeError:
-                await event.answer('⛔ غير مصرح لك باستخدام لوحة الأدمن.')
+        try:
+            await event.answer('⛔ غير مصرح لك.', show_alert=True)
+        except TypeError:
+            await event.answer('⛔ غير مصرح لك.')
         return False
-
     current_state = await state.get_state()
     if current_state not in {AdminFlow.authenticated.state, AdminFlow.waiting_password.state}:
-        if hasattr(event, 'answer'):
-            try:
-                await event.answer('🔐 ادخل أولاً عبر أمر الأدمن ثم كلمة المرور.', show_alert=True)
-            except TypeError:
-                await event.answer('🔐 ادخل أولاً عبر أمر الأدمن ثم كلمة المرور.')
+        try:
+            await event.answer('🔐 ادخل أولاً عبر أمر الأدمن.', show_alert=True)
+        except TypeError:
+            await event.answer('🔐 ادخل أولاً عبر أمر الأدمن.')
         return False
     return True
 
@@ -156,9 +153,10 @@ async def send_home(msg_or_call, user_id: int, state: FSMContext = None):
     kb = menu_for(user_id)
 
     if isinstance(msg_or_call, CallbackQuery):
-        await msg_or_call.message.edit_caption(caption=txt, reply_markup=kb)
+        # احذف البانر القديم وابعت جديد في الأسفل
+        await update_ui_call(msg_or_call, state, txt, kb)
     else:
-        # رسالة /start — نبعت بانر جديد
+        # رسالة /start — ابعت بانر جديد
         await send_ui(bot, msg_or_call.chat.id, txt, kb, state)
 
 
@@ -179,11 +177,9 @@ async def start(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == 'home')
 async def home(call: CallbackQuery, state: FSMContext):
-    msg_id = call.message.message_id
     await state.clear()
     _sessions.pop(call.from_user.id, None)
-    await state.update_data(ui_msg_id=msg_id, active_msg_id=msg_id)
-    await send_home(call, call.from_user.id)
+    await send_home(call, call.from_user.id, state)
     await call.answer()
 
 
@@ -192,21 +188,19 @@ async def home(call: CallbackQuery, state: FSMContext):
 # ──────────────────────────────────────────────
 
 @dp.callback_query(F.data == 'my_stats')
-async def my_stats(call: CallbackQuery):
-    row  = db.get_user(call.from_user.id)
-    name = (row['custom_name'] or row['first_name'] or 'مستخدم') if row else 'مستخدم'
-    sub  = row['subscription_until'] if row else None
+async def my_stats(call: CallbackQuery, state: FSMContext):
+    row      = db.get_user(call.from_user.id)
+    name     = (row['custom_name'] or row['first_name'] or 'مستخدم') if row else 'مستخدم'
+    sub      = row['subscription_until'] if row else None
     joined   = row['joined_at'] if row else '—'
     sub_text = sub if sub else '❌ بدون اشتراك'
-    await call.message.edit_caption(
-        caption=(
-            f"📊 <b>إحصائياتك</b>\n\n"
-            f"👤 الاسم: <b>{name}</b>\n"
-            f"🆔 ID: <code>{call.from_user.id}</code>\n"
-            f"📅 انضممت: {joined}\n"
-            f"⏳ الاشتراك حتى: {sub_text}"
-        ),
-        reply_markup=back_home()
+    await update_ui_call(call, state,
+        f"📊 <b>إحصائياتك</b>\n\n"
+        f"👤 الاسم: <b>{name}</b>\n"
+        f"🆔 ID: <code>{call.from_user.id}</code>\n"
+        f"📅 انضممت: {joined}\n"
+        f"⏳ الاشتراك حتى: {sub_text}",
+        back_home()
     )
     await call.answer()
 
@@ -218,9 +212,9 @@ async def my_stats(call: CallbackQuery):
 @dp.callback_query(F.data == 'redeem')
 async def redeem_start(call: CallbackQuery, state: FSMContext):
     await state.set_state(UserFlow.waiting_redeem)
-    await call.message.edit_caption(
-        caption="🎟️ <b>تفعيل كود Redeem</b>\n\nأرسل كود التفعيل الآن:",
-        reply_markup=back_home()
+    await update_ui_call(call, state,
+        "🎟️ <b>تفعيل كود Redeem</b>\n\nأرسل كود التفعيل الآن:",
+        back_home()
     )
     await call.answer()
 
@@ -230,16 +224,14 @@ async def redeem_code(message: Message, state: FSMContext):
     code  = message.text.strip()
     hours = db.use_code(code, message.from_user.id)
     if not hours:
-        await reply_ui(
-            bot, state, message.chat.id,
+        await reply_ui(bot, state, message.chat.id,
             "❌ <b>الكود غير صالح أو تم استخدامه من قبل.</b>\n\nتأكد من الكود وحاول مرة أخرى.",
             back_home()
         )
         return
     until = db.set_subscription_hours(message.from_user.id, hours)
     await clear_keep(state)
-    await reply_ui(
-        bot, state, message.chat.id,
+    await reply_ui(bot, state, message.chat.id,
         f"🎉 <b>تم تفعيل الاشتراك بنجاح!</b>\n\n"
         f"⏳ صالح حتى (UTC):\n<code>{until.isoformat(timespec='seconds')}</code>\n\n"
         f"مدة الاشتراك: <b>{hours} ساعة</b>",
@@ -263,10 +255,9 @@ async def enter_gate(call: CallbackQuery, state: FSMContext):
     if not gate:
         await call.answer('البوابة غير موجودة.', show_alert=True)
         return
-    msg_id = call.message.message_id
     await state.clear()
-    await state.update_data(ui_msg_id=msg_id, active_msg_id=msg_id)
     _new_session(call.from_user.id)
+    # gate.enter يستخدم update_ui_call فيحدّث ui_msg_id تلقائياً
     await gate.enter(call, state, {'gate_names': GATE_NAMES})
     await call.answer()
 
@@ -298,14 +289,12 @@ async def proxy_skip(call: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == 'proxy:custom', AdGateStates.waiting_proxy)
 async def proxy_custom_prompt(call: CallbackQuery, state: FSMContext):
     if not await _check_session(call, state): return
-    await call.message.edit_caption(
-        caption=(
-            '✏️ <b>أدخل البروكسي يدوياً:</b>\n\n'
-            'الصيغة:\n'
-            '<code>IP:PORT</code>\n'
-            '<code>user:pass@IP:PORT</code>'
-        ),
-        reply_markup=back_home()
+    await update_ui_call(call, state,
+        '✏️ <b>أدخل البروكسي يدوياً:</b>\n\n'
+        'الصيغة:\n'
+        '<code>IP:PORT</code>\n'
+        '<code>user:pass@IP:PORT</code>',
+        back_home()
     )
     await call.answer()
 
@@ -386,29 +375,25 @@ async def days_input(m: Message, state: FSMContext):
 
 @dp.callback_query(F.data == 'image:skip')
 async def image_skip(call: CallbackQuery, state: FSMContext):
-    if not await _check_session(call, state):
-        return
+    if not await _check_session(call, state): return
     await _dispatch(state, 'handle_image_skip', call)
     await call.answer()
 
 @dp.callback_query(F.data == 'image:change')
 async def image_change(call: CallbackQuery, state: FSMContext):
-    if not await _check_session(call, state):
-        return
+    if not await _check_session(call, state): return
     await _dispatch(state, 'handle_image_back', call)
     await call.answer()
 
 @dp.callback_query(F.data.startswith('objective:'), AdGateStates.waiting_objective)
 async def objective_select(call: CallbackQuery, state: FSMContext):
-    if not await _check_session(call, state):
-        return
+    if not await _check_session(call, state): return
     await _dispatch(state, 'handle_objective', call)
     await call.answer()
 
 @dp.callback_query(F.data.in_(['confirm:yes', 'confirm:no']), AdGateStates.waiting_confirm)
 async def confirm_action(call: CallbackQuery, state: FSMContext):
-    if not await _check_session(call, state):
-        return
+    if not await _check_session(call, state): return
     await _dispatch(state, 'handle_confirm', call)
     await call.answer()
 
@@ -417,15 +402,13 @@ async def confirm_action(call: CallbackQuery, state: FSMContext):
     AdGateStates.waiting_activate
 )
 async def activate_action(call: CallbackQuery, state: FSMContext):
-    if not await _check_session(call, state):
-        return
+    if not await _check_session(call, state): return
     await _dispatch(state, 'handle_activate', call)
     await call.answer()
 
 @dp.callback_query(F.data.startswith('post:'), AdGateStates.waiting_post_select)
 async def post_select(call: CallbackQuery, state: FSMContext):
-    if not await _check_session(call, state):
-        return
+    if not await _check_session(call, state): return
     data = await state.get_data()
     gate = GATES.get(data.get('gate_type'))
     if gate and hasattr(gate, 'handle_post_select'):
@@ -447,40 +430,34 @@ async def post_select_manual_msg(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == 'tools:menu')
 async def tools_menu_cb(call: CallbackQuery, state: FSMContext):
-    msg_id = call.message.message_id
     await state.clear()
-    await state.update_data(ui_msg_id=msg_id, active_msg_id=msg_id)
-    await call.message.edit_caption(
-        caption="🛠️ <b>الأدوات</b>\n\nاختر القسم:",
-        reply_markup=tools_menu()
+    await update_ui_call(call, state,
+        "🛠️ <b>الأدوات</b>\n\nاختر القسم:",
+        tools_menu()
     )
     await call.answer()
 
 
 @dp.callback_query(F.data == 'tools:ads')
-async def tools_ads_cb(call: CallbackQuery):
+async def tools_ads_cb(call: CallbackQuery, state: FSMContext):
     row = db.get_user(call.from_user.id)
     sub = is_subscribed(row)
-    await call.message.edit_caption(
-        caption=(
-            "📢 <b>أدوات الإعلانات</b>\n\n"
-            + ("اختر نوع الإعلان:" if sub else "❌ هذه الأدوات للمشتركين فقط.\nفعّل كودك أولاً.")
-        ),
-        reply_markup=ad_tools_menu(GATE_NAMES, sub)
+    await update_ui_call(call, state,
+        "📢 <b>أدوات الإعلانات</b>\n\n"
+        + ("اختر نوع الإعلان:" if sub else "❌ هذه الأدوات للمشتركين فقط.\nفعّل كودك أولاً."),
+        ad_tools_menu(GATE_NAMES, sub)
     )
     await call.answer()
 
 
 @dp.callback_query(F.data == 'tools:link')
-async def tools_link_cb(call: CallbackQuery):
+async def tools_link_cb(call: CallbackQuery, state: FSMContext):
     row = db.get_user(call.from_user.id)
     sub = is_subscribed(row)
-    await call.message.edit_caption(
-        caption=(
-            "🔗 <b>أدوات ربط و تسميع</b>\n\n"
-            + ("اختر الأداة:" if sub else "❌ هذه الأدوات للمشتركين فقط. فعّل كودك أولاً.")
-        ),
-        reply_markup=link_tools_menu(sub)
+    await update_ui_call(call, state,
+        "🔗 <b>أدوات ربط و تسميع</b>\n\n"
+        + ("اختر الأداة:" if sub else "❌ هذه الأدوات للمشتركين فقط. فعّل كودك أولاً."),
+        link_tools_menu(sub)
     )
     await call.answer()
 
@@ -495,92 +472,79 @@ async def bm_cards_start(call: CallbackQuery, state: FSMContext):
     if not is_subscribed(row):
         await call.answer('❌ هذه الأداة للمشتركين فقط. فعّل كود Redeem أولاً.', show_alert=True)
         return
-    msg_id = call.message.message_id
     await state.clear()
     tok = _new_session(call.from_user.id)
     await state.set_state(BMToolStates.waiting_proxy)
-    await state.update_data(_session_tok=tok, ui_msg_id=msg_id, active_msg_id=msg_id)
-    await call.message.edit_caption(
-        caption=(
-            "💳 <b>تسميع البطاقات BM</b>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "📋 <b>خطوات العمل:</b>\n"
-            "1️⃣ البروكسي\n"
-            "2️⃣ الكوكيز (فيسبوك/انستاجرام BM)\n"
-            "3️⃣ BM ID (Business Manager)\n"
-            "4️⃣ Ad Account ID\n"
-            "5️⃣ اختيار البطاقات\n"
-            "6️⃣ الفاصل الزمني بالثواني\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "🔽 <b>الخطوة 1:</b> اختر البروكسي"
-        ),
-        reply_markup=bm_proxy_keyboard()
+    await update_ui_call(call, state,
+        "💳 <b>تسميع البطاقات BM</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📋 <b>خطوات العمل:</b>\n"
+        "1️⃣ البروكسي\n"
+        "2️⃣ الكوكيز (فيسبوك/انستاجرام BM)\n"
+        "3️⃣ BM ID (Business Manager)\n"
+        "4️⃣ Ad Account ID\n"
+        "5️⃣ اختيار البطاقات\n"
+        "6️⃣ الفاصل الزمني بالثواني\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🔽 <b>الخطوة 1:</b> اختر البروكسي",
+        bm_proxy_keyboard()
     )
+    await state.update_data(_session_tok=tok)
     await call.answer()
 
 
 @dp.callback_query(F.data == 'bm:proxy:auto', BMToolStates.waiting_proxy)
 async def bm_proxy_auto(call: CallbackQuery, state: FSMContext):
-    if not await _check_session(call, state):
-        return
+    if not await _check_session(call, state): return
     proxy = proxy_manager.choose()
     if not proxy:
         await call.answer("⚠️ لا توجد بروكسيات متاحة في القائمة", show_alert=True)
         return
     await state.update_data(bm_proxy=proxy)
     await state.set_state(BMToolStates.waiting_cookies)
-    await call.message.edit_caption(
-        caption=(
-            "✅ <b>البروكسي:</b> تم اختيار بروكسي من البوت تلقائياً\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "🔽 <b>الخطوة 2:</b> أرسل كوكيز Business Manager\n\n"
-            "📌 <b>أنواع الكوكيز المقبولة:</b>\n"
-            "• نسخ/لصق من المتصفح\n"
-            "• تنسيق Cookie: name=value; ...\n"
-            "• تنسيق JSON: {\"name\": \"value\", ...}\n\n"
-            "💡 <b>مثال:</b>\n"
-            "<code>c_user=123;xs=abc;datr=xyz</code>"
-        ),
-        reply_markup=back_home()
+    await update_ui_call(call, state,
+        "✅ <b>البروكسي:</b> تم اختيار بروكسي من البوت تلقائياً\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🔽 <b>الخطوة 2:</b> أرسل كوكيز Business Manager\n\n"
+        "📌 <b>أنواع الكوكيز المقبولة:</b>\n"
+        "• نسخ/لصق من المتصفح\n"
+        "• تنسيق Cookie: name=value; ...\n"
+        "• تنسيق JSON: {\"name\": \"value\", ...}\n\n"
+        "💡 <b>مثال:</b>\n"
+        "<code>c_user=123;xs=abc;datr=xyz</code>",
+        back_home()
     )
     await call.answer()
 
 
 @dp.callback_query(F.data == 'bm:proxy:skip', BMToolStates.waiting_proxy)
 async def bm_proxy_skip(call: CallbackQuery, state: FSMContext):
-    if not await _check_session(call, state):
-        return
+    if not await _check_session(call, state): return
     await state.update_data(bm_proxy=None)
     await state.set_state(BMToolStates.waiting_cookies)
-    await call.message.edit_caption(
-        caption=(
-            "✅ <b>تم تخطي البروكسي</b>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "🔽 <b>الخطوة 2:</b> أرسل كوكيز Business Manager\n\n"
-            "📌 <b>أنواع الكوكيز المقبولة:</b>\n"
-            "• تنسيق Cookie: name=value; ...\n"
-            "• تنسيق JSON: {\"name\": \"value\", ...}\n\n"
-            "💡 <b>مثال:</b>\n"
-            "<code>c_user=123;xs=abc;datr=xyz</code>"
-        ),
-        reply_markup=back_home()
+    await update_ui_call(call, state,
+        "✅ <b>تم تخطي البروكسي</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🔽 <b>الخطوة 2:</b> أرسل كوكيز Business Manager\n\n"
+        "📌 <b>أنواع الكوكيز المقبولة:</b>\n"
+        "• تنسيق Cookie: name=value; ...\n"
+        "• تنسيق JSON: {\"name\": \"value\", ...}\n\n"
+        "💡 <b>مثال:</b>\n"
+        "<code>c_user=123;xs=abc;datr=xyz</code>",
+        back_home()
     )
     await call.answer()
 
 
 @dp.callback_query(F.data == 'bm:proxy:custom', BMToolStates.waiting_proxy)
 async def bm_proxy_custom_prompt(call: CallbackQuery, state: FSMContext):
-    if not await _check_session(call, state):
-        return
-    await state.set_state(BMToolStates.waiting_proxy)
-    await call.message.edit_caption(
-        caption=(
-            "✏️ <b>أدخل البروكسي يدوياً:</b>\n\n"
-            "الصيغة:\n"
-            "<code>IP:PORT</code>\n"
-            "<code>user:pass@IP:PORT</code>"
-        ),
-        reply_markup=back_home()
+    if not await _check_session(call, state): return
+    await update_ui_call(call, state,
+        "✏️ <b>أدخل البروكسي يدوياً:</b>\n\n"
+        "الصيغة:\n"
+        "<code>IP:PORT</code>\n"
+        "<code>user:pass@IP:PORT</code>",
+        back_home()
     )
     await call.answer()
 
@@ -595,8 +559,7 @@ async def bm_proxy_custom_input(message: Message, state: FSMContext):
         from services.bm_card_service import _parse_proxy
         parsed = _parse_proxy(proxy)
         if not parsed:
-            await reply_ui(
-                bot, state, message.chat.id,
+            await reply_ui(bot, state, message.chat.id,
                 "❌ <b>صيغة البروكسي خاطئة</b>\n\n"
                 "صيغ مقبولة:\n"
                 "📌 <code>1.2.3.4:8080</code>\n"
@@ -606,8 +569,7 @@ async def bm_proxy_custom_input(message: Message, state: FSMContext):
             return
     await state.update_data(bm_proxy=proxy)
     await state.set_state(BMToolStates.waiting_cookies)
-    await reply_ui(
-        bot, state, message.chat.id,
+    await reply_ui(bot, state, message.chat.id,
         "✅ <b>البروكسي:</b> تم حفظ البروكسي\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "🔽 <b>الخطوة 2:</b> أرسل كوكيز Business Manager\n\n"
@@ -623,8 +585,7 @@ async def bm_cookies_input(message: Message, state: FSMContext):
 
     parsed = _parse_cookies(cookies_raw)
     if not parsed or len(parsed) < 2:
-        await reply_ui(
-            bot, state, message.chat.id,
+        await reply_ui(bot, state, message.chat.id,
             "❌ <b>الكوكيز غير صالحة أو ناقصة</b>\n\n"
             "📌 <b>التنسيقات المقبولة:</b>\n"
             "• <code>name=value;name2=value2</code>\n"
@@ -637,12 +598,9 @@ async def bm_cookies_input(message: Message, state: FSMContext):
     validation = _validate_cookie_keys(parsed)
     if not validation['looks_valid']:
         missing = []
-        if not validation['has_c_user']:
-            missing.append('c_user')
-        if not validation['has_xs']:
-            missing.append('xs')
-        await reply_ui(
-            bot, state, message.chat.id,
+        if not validation['has_c_user']: missing.append('c_user')
+        if not validation['has_xs']:     missing.append('xs')
+        await reply_ui(bot, state, message.chat.id,
             f"⚠️ <b>كوكيز ناقصة — مفاتيح مفقودة: {', '.join(missing)}</b>\n\n"
             f"• إجمالي المفاتيح: {validation['total_keys']}\n"
             f"• c_user: {'✅' if validation['has_c_user'] else '❌'}\n"
@@ -655,8 +613,7 @@ async def bm_cookies_input(message: Message, state: FSMContext):
     data  = await state.get_data()
     proxy = data.get('bm_proxy')
 
-    await reply_ui(
-        bot, state, message.chat.id,
+    await reply_ui(bot, state, message.chat.id,
         f"⏳ <b>جارٍ تحليل الكوكيز...</b>\n"
         f"• المفاتيح الموجودة: <b>{validation['total_keys']}</b>\n"
         f"• c_user: ✅  xs: ✅\n\n"
@@ -670,8 +627,7 @@ async def bm_cookies_input(message: Message, state: FSMContext):
             timeout=120
         )
     except asyncio.TimeoutError:
-        await reply_ui(
-            bot, state, message.chat.id,
+        await reply_ui(bot, state, message.chat.id,
             "❌ <b>انتهت مهلة التحقق من الكوكيز</b>\n\n"
             "التحقق استغرق وقتاً أطول من المتوقع.\n"
             "💡 جرّب بدون بروكسي أو استخدم كوكيز أحدث.",
@@ -679,8 +635,7 @@ async def bm_cookies_input(message: Message, state: FSMContext):
         )
         return
     except Exception as exc:
-        await reply_ui(
-            bot, state, message.chat.id,
+        await reply_ui(bot, state, message.chat.id,
             f"❌ <b>حصل خطأ أثناء التحقق من الكوكيز</b>\n\n"
             f"<code>{html.escape(str(exc)[:300])}</code>",
             back_home()
@@ -691,27 +646,24 @@ async def bm_cookies_input(message: Message, state: FSMContext):
         error_msg   = html.escape(str(validation_result['error']))
         suggestions = ""
         if 'ناقصة' in error_msg or 'مفقودة' in error_msg.lower():
-            suggestions = "\n\n💡 تأكد من نسخ الكوكيز كاملة — c_user و xs مطلوبين"
+            suggestions = "\n\n💡 تأكد من نسخ الكوكيز كاملة"
         elif 'منتهية' in error_msg or 'login' in error_msg.lower() or 'checkpoint' in error_msg.lower():
-            suggestions = "\n\n💡 الكوكيز منتهية، سجل دخول مرة أخرى\nافتح business.facebook.com وأعد نسخ الكوكيز"
+            suggestions = "\n\n💡 الكوكيز منتهية — سجّل دخول مرة أخرى وأعد النسخ"
         elif 'Business Manager' in error_msg:
-            suggestions = "\n\n💡 تأكد من فتح business.facebook.com وليس facebook.com فقط"
+            suggestions = "\n\n💡 تأكد من فتح business.facebook.com"
         else:
             suggestions = "\n\n💡 حاول نسخ الكوكيز من متصفح جديد (Chrome Incognito)"
 
-        await reply_ui(
-            bot, state, message.chat.id,
+        await reply_ui(bot, state, message.chat.id,
             "❌ <b>الكوكيز غير صالحة أو الجلسة غير متاحة</b>\n\n"
-            f"<b>السبب:</b> {error_msg}"
-            f"{suggestions}",
+            f"<b>السبب:</b> {error_msg}{suggestions}",
             back_home()
         )
         return
 
     await state.update_data(bm_cookies=cookies_raw)
     await state.set_state(BMToolStates.waiting_bm_id)
-    await reply_ui(
-        bot, state, message.chat.id,
+    await reply_ui(bot, state, message.chat.id,
         "✅ <b>تم حفظ الكوكيز والتحقق منها بنجاح!</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "🔽 <b>الخطوة 3:</b> أرسل Business Manager ID\n\n"
@@ -725,16 +677,14 @@ async def bm_cookies_input(message: Message, state: FSMContext):
 async def bm_id_input(message: Message, state: FSMContext):
     bm_id = message.text.strip().replace(' ', '')
     if not bm_id.isdigit():
-        await reply_ui(
-            bot, state, message.chat.id,
+        await reply_ui(bot, state, message.chat.id,
             "❌ <b>BM ID يجب أن يكون أرقاماً فقط</b>\n\nمثال: <code>123456789012345</code>",
             back_home()
         )
         return
     await state.update_data(bm_id=bm_id)
     await state.set_state(BMToolStates.waiting_ad_id)
-    await reply_ui(
-        bot, state, message.chat.id,
+    await reply_ui(bot, state, message.chat.id,
         "✅ <b>تم حفظ BM ID</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "🔽 <b>الخطوة 4:</b> أرسل Ad Account ID\n\n"
@@ -748,8 +698,7 @@ async def bm_id_input(message: Message, state: FSMContext):
 async def bm_ad_id_input(message: Message, state: FSMContext):
     ad_id = message.text.strip().replace('act_', '').replace(' ', '')
     if not ad_id.isdigit():
-        await reply_ui(
-            bot, state, message.chat.id,
+        await reply_ui(bot, state, message.chat.id,
             "❌ <b>Ad Account ID يجب أن يكون أرقاماً فقط</b>\n\nمثال: <code>987654321098765</code>",
             back_home()
         )
@@ -769,18 +718,13 @@ async def bm_ad_id_input(message: Message, state: FSMContext):
     if not result['success']:
         error_msg   = html.escape(str(result['error']))
         suggestions = ""
-        proxy_used  = data.get('bm_proxy')
         if 'منتهية' in error_msg or 'login' in error_msg.lower():
             suggestions = "\n\n💡 تأكد من أن الجلسة نشطة وحاول تحديث الكوكيز"
-            if proxy_used:
-                suggestions += "\n- جرب بدون بروكسي"
         elif 'dtsg' in error_msg.lower():
-            suggestions = "\n\n💡 تأكد من أن الكوكيز صحيحة وأن لديك صلاحيات في Business Manager"
-        await reply_ui(
-            bot, state, message.chat.id,
+            suggestions = "\n\n💡 تأكد من الصلاحيات في Business Manager"
+        await reply_ui(bot, state, message.chat.id,
             f"❌ <b>فشل جلب البطاقات</b>\n\n"
-            f"<b>السبب:</b> {error_msg}"
-            f"{suggestions}",
+            f"<b>السبب:</b> {error_msg}{suggestions}",
             back_home()
         )
         return
@@ -793,8 +737,7 @@ async def bm_ad_id_input(message: Message, state: FSMContext):
         f"  {i+1}. {c.get('card_association_name','Card')} •••• {c.get('last_four_digits','****')}"
         for i, c in enumerate(cards)
     )
-    await reply_ui(
-        bot, state, message.chat.id,
+    await reply_ui(bot, state, message.chat.id,
         f"✅ <b>تم جلب {len(cards)} بطاقة</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"{card_list}\n\n"
@@ -802,15 +745,14 @@ async def bm_ad_id_input(message: Message, state: FSMContext):
         "🔽 <b>الخطوة 5:</b> اختر البطاقات المراد تسميعها",
         bm_card_select_keyboard(cards, [])
     )
-    # ui_msg_id = active_msg_id (تحديث للتأكد من صحة session check)
+    # نحدّث active_msg_id ليتطابق مع ui_msg_id الجديد
     fresh = await state.get_data()
     await state.update_data(active_msg_id=fresh.get('ui_msg_id'))
 
 
 @dp.callback_query(F.data.startswith('bm:card:'), BMToolStates.waiting_card_sel)
 async def bm_card_toggle(call: CallbackQuery, state: FSMContext):
-    if not await _check_session(call, state):
-        return
+    if not await _check_session(call, state): return
     idx  = int(call.data.split(':')[2])
     data = await state.get_data()
     cards    = data.get('bm_cards', [])
@@ -827,45 +769,48 @@ async def bm_card_toggle(call: CallbackQuery, state: FSMContext):
         selected.append(cid)
 
     await state.update_data(bm_selected=selected)
-    await call.message.edit_reply_markup(
-        reply_markup=bm_card_select_keyboard(cards, selected)
-    )
+    # تحديث الأزرار فقط بدون حذف البانر (تحديث keyboard فقط)
+    try:
+        await call.message.edit_reply_markup(
+            reply_markup=bm_card_select_keyboard(cards, selected)
+        )
+    except Exception:
+        pass
     await call.answer(f"{'✅ تم التحديد' if cid in selected else '⬜ تم الإلغاء'}")
 
 
 @dp.callback_query(F.data == 'bm:select_all', BMToolStates.waiting_card_sel)
 async def bm_select_all(call: CallbackQuery, state: FSMContext):
-    if not await _check_session(call, state):
-        return
+    if not await _check_session(call, state): return
     data     = await state.get_data()
     cards    = data.get('bm_cards', [])
     selected = [c.get('credential_id', '') for c in cards]
     await state.update_data(bm_selected=selected)
-    await call.message.edit_reply_markup(
-        reply_markup=bm_card_select_keyboard(cards, selected)
-    )
+    try:
+        await call.message.edit_reply_markup(
+            reply_markup=bm_card_select_keyboard(cards, selected)
+        )
+    except Exception:
+        pass
     await call.answer(f"☑️ تم تحديد الكل ({len(cards)} بطاقة)")
 
 
 @dp.callback_query(F.data == 'bm:confirm_cards', BMToolStates.waiting_card_sel)
 async def bm_confirm_cards(call: CallbackQuery, state: FSMContext):
-    if not await _check_session(call, state):
-        return
+    if not await _check_session(call, state): return
     data     = await state.get_data()
     selected = data.get('bm_selected', [])
     if not selected:
         await call.answer("⚠️ لم تختر أي بطاقة!", show_alert=True)
         return
     await state.set_state(BMToolStates.waiting_interval)
-    await call.message.edit_caption(
-        caption=(
-            f"✅ <b>تم تحديد {len(selected)} بطاقة</b>\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "🔽 <b>الخطوة 6:</b> أدخل الفاصل الزمني بين كل بطاقة\n\n"
-            "📌 أرسل رقماً بالثواني (مثال: <code>3</code>)\n"
-            "أو أرسل <code>0</code> بدون فاصل"
-        ),
-        reply_markup=back_home()
+    await update_ui_call(call, state,
+        f"✅ <b>تم تحديد {len(selected)} بطاقة</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🔽 <b>الخطوة 6:</b> أدخل الفاصل الزمني بين كل بطاقة\n\n"
+        "📌 أرسل رقماً بالثواني (مثال: <code>3</code>)\n"
+        "أو أرسل <code>0</code> بدون فاصل",
+        back_home()
     )
     await call.answer()
 
@@ -877,8 +822,7 @@ async def bm_interval_input(message: Message, state: FSMContext):
         if interval < 0:
             raise ValueError
     except ValueError:
-        await reply_ui(
-            bot, state, message.chat.id,
+        await reply_ui(bot, state, message.chat.id,
             "❌ أدخل رقم صحيح بالثواني (مثال: <code>3</code>)",
             back_home()
         )
@@ -894,31 +838,25 @@ async def bm_interval_input(message: Message, state: FSMContext):
 
     await clear_keep(state)
 
-    await reply_ui(
-        bot, state, message.chat.id,
+    await reply_ui(bot, state, message.chat.id,
         f"⏳ <b>جارٍ تسميع {len(selected)} بطاقة...</b>\n\n"
         f"الفاصل الزمني: <b>{interval} ثانية</b>"
     )
 
     result = await warm_bm_cards(
-        cookies=cookies,
-        bm_id=bm_id,
-        ad_id=ad_id,
-        cards=cards,
-        card_ids=selected,
-        interval_secs=interval,
-        proxy=proxy,
+        cookies=cookies, bm_id=bm_id, ad_id=ad_id,
+        cards=cards, card_ids=selected,
+        interval_secs=interval, proxy=proxy,
     )
 
     if not result.get('success'):
-        await reply_ui(
-            bot, state, message.chat.id,
+        await reply_ui(bot, state, message.chat.id,
             f"❌ <b>فشل التسميع</b>\n\nالسبب: {result.get('error', 'خطأ غير معروف')}",
             back_home()
         )
         return
 
-    lines = [f"📊 <b>نتيجة التسميع</b>\n", "━━━━━━━━━━━━━━━━━━━━"]
+    lines = ["📊 <b>نتيجة التسميع</b>\n", "━━━━━━━━━━━━━━━━━━━━"]
     for r in result['results']:
         icon = "✅" if r['success'] else "❌"
         line = f"{icon} {r['label']}"
@@ -930,31 +868,28 @@ async def bm_interval_input(message: Message, state: FSMContext):
         f"✅ نجح: <b>{result['success_count']}</b>   "
         f"❌ فشل: <b>{result['fail_count']}</b>"
     )
-
     await reply_ui(bot, state, message.chat.id, "\n".join(lines), back_home())
 
 
 # ── ربط بايبال (placeholder) ──
 
 @dp.callback_query(F.data == 'tool:paypal')
-async def tool_paypal(call: CallbackQuery):
+async def tool_paypal(call: CallbackQuery, state: FSMContext):
     row = db.get_user(call.from_user.id)
     if not is_subscribed(row):
         await call.answer('❌ هذه الأداة للمشتركين فقط. فعّل كود Redeem أولاً.', show_alert=True)
         return
-    await call.message.edit_caption(
-        caption=(
-            "🔗 <b>ربط بايبال</b>\n\n"
-            "⏳ هذه الأداة قيد التطوير وستكون متاحة قريباً."
-        ),
-        reply_markup=link_tools_menu(True)
+    await update_ui_call(call, state,
+        "🔗 <b>ربط بايبال</b>\n\n"
+        "⏳ هذه الأداة قيد التطوير وستكون متاحة قريباً.",
+        link_tools_menu(True)
     )
     await call.answer()
 
 
 # ──────────────────────────────────────────────
-#  لوحة تحكم الأدمن — /beshoy (مخفي)
-#  (تبقى رسائل نصية عادية — بدون بانر)
+#  لوحة تحكم الأدمن — /beshoy
+#  (رسائل نصية عادية — بدون بانر)
 # ──────────────────────────────────────────────
 
 @dp.message(Command(ADMIN_CMD))
@@ -983,8 +918,7 @@ async def admin_password(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == 'admin:panel')
 async def admin_panel_cb(call: CallbackQuery, state: FSMContext):
-    if not await ensure_admin_access(call, state):
-        return
+    if not await ensure_admin_access(call, state): return
     c = db.counts()
     await call.message.edit_text(
         f"⚙️ <b>لوحة التحكم</b>\n\n"
@@ -996,8 +930,7 @@ async def admin_panel_cb(call: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == 'admin:stats')
 async def admin_stats(call: CallbackQuery, state: FSMContext):
-    if not await ensure_admin_access(call, state):
-        return
+    if not await ensure_admin_access(call, state): return
     c       = db.counts()
     proxies = len(proxy_manager.all())
     await call.message.edit_text(
@@ -1015,8 +948,7 @@ async def admin_stats(call: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == 'admin:gen_code')
 async def admin_gen_code(call: CallbackQuery, state: FSMContext):
-    if not await ensure_admin_access(call, state):
-        return
+    if not await ensure_admin_access(call, state): return
     await state.set_state(AdminFlow.waiting_code_duration)
     await call.message.edit_text(
         "🎟️ <b>توليد كود Redeem</b>\n\n"
@@ -1053,8 +985,7 @@ async def admin_code_duration(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == 'admin:list_users')
 async def admin_list_users(call: CallbackQuery, state: FSMContext):
-    if not await ensure_admin_access(call, state):
-        return
+    if not await ensure_admin_access(call, state): return
     users = [dict(r) for r in db.all_active_users()]
     if not users:
         await call.message.edit_text("لا يوجد مشتركون.", reply_markup=back_admin())
@@ -1069,10 +1000,9 @@ async def admin_list_users(call: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith('admin:user_info:'))
 async def admin_user_info(call: CallbackQuery, state: FSMContext):
-    if not await ensure_admin_access(call, state):
-        return
-    uid  = int(call.data.split(':')[2])
-    row  = db.get_user(uid)
+    if not await ensure_admin_access(call, state): return
+    uid = int(call.data.split(':')[2])
+    row = db.get_user(uid)
     if not row:
         await call.answer("المستخدم غير موجود", show_alert=True)
         return
@@ -1093,8 +1023,7 @@ async def admin_user_info(call: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith('admin:extend:'))
 async def admin_extend_user(call: CallbackQuery, state: FSMContext):
-    if not await ensure_admin_access(call, state):
-        return
+    if not await ensure_admin_access(call, state): return
     uid = int(call.data.split(':')[2])
     await state.update_data(extend_uid=uid)
     await state.set_state(AdminFlow.waiting_extend_duration)
@@ -1111,7 +1040,7 @@ async def admin_extend_duration(message: Message, state: FSMContext):
     uid  = data.get('extend_uid')
     if not uid:
         await state.clear()
-        await message.answer("❌ لم يتم تحديد المستخدم المطلوب تمديده.", reply_markup=admin_panel())
+        await message.answer("❌ لم يتم تحديد المستخدم.", reply_markup=admin_panel())
         return
     try:
         hours = int(message.text.strip())
@@ -1127,7 +1056,7 @@ async def admin_extend_duration(message: Message, state: FSMContext):
     period = f"{days} يوم" if days >= 1 else f"{hours} ساعة"
     await message.answer(
         f"✅ <b>تم تمديد الاشتراك</b>\n\n"
-        f"👤 المستخدم: <code>{uid}</code>\n"
+        f"👤 <code>{uid}</code>\n"
         f"⏳ صالح حتى: <code>{until.isoformat(timespec='seconds')}</code>\n"
         f"المدة المضافة: <b>{period}</b>",
         reply_markup=admin_panel()
@@ -1136,8 +1065,7 @@ async def admin_extend_duration(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith('admin:del:'))
 async def admin_del_user(call: CallbackQuery, state: FSMContext):
-    if not await ensure_admin_access(call, state):
-        return
+    if not await ensure_admin_access(call, state): return
     uid = int(call.data.split(':')[2])
     db.remove_user(uid)
     await call.message.edit_text("✅ تم حذف المستخدم.", reply_markup=back_admin())
@@ -1146,8 +1074,7 @@ async def admin_del_user(call: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == 'admin:set_user')
 async def admin_set_user(call: CallbackQuery, state: FSMContext):
-    if not await ensure_admin_access(call, state):
-        return
+    if not await ensure_admin_access(call, state): return
     await state.set_state(AdminFlow.waiting_user_manage)
     await call.message.edit_text(
         "👤 <b>إضافة / تمديد مشترك</b>\n\n"
@@ -1187,13 +1114,9 @@ async def admin_manage_user(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == 'admin:remove_user')
 async def admin_remove_user_start(call: CallbackQuery, state: FSMContext):
-    if not await ensure_admin_access(call, state):
-        return
+    if not await ensure_admin_access(call, state): return
     await state.set_state(AdminFlow.waiting_remove_user)
-    await call.message.edit_text(
-        "🗑️ <b>حذف مشترك</b>\n\nأرسل user_id:",
-        reply_markup=back_admin()
-    )
+    await call.message.edit_text("🗑️ <b>حذف مشترك</b>\n\nأرسل user_id:", reply_markup=back_admin())
     await call.answer()
 
 
@@ -1211,8 +1134,7 @@ async def admin_remove_user(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == 'admin:list_codes')
 async def admin_list_codes(call: CallbackQuery, state: FSMContext):
-    if not await ensure_admin_access(call, state):
-        return
+    if not await ensure_admin_access(call, state): return
     rows = db.list_recent_codes(10)
     if not rows:
         await call.message.edit_text("لا توجد أكواد.", reply_markup=back_admin())
@@ -1228,8 +1150,7 @@ async def admin_list_codes(call: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == 'admin:add_proxies')
 async def admin_add_proxies_start(call: CallbackQuery, state: FSMContext):
-    if not await ensure_admin_access(call, state):
-        return
+    if not await ensure_admin_access(call, state): return
     await state.set_state(AdminFlow.waiting_proxies)
     count = len(proxy_manager.all())
     await call.message.edit_text(
@@ -1257,8 +1178,7 @@ async def admin_add_proxies(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == 'admin:list_proxies')
 async def admin_list_proxies(call: CallbackQuery, state: FSMContext):
-    if not await ensure_admin_access(call, state):
-        return
+    if not await ensure_admin_access(call, state): return
     proxies = proxy_manager.all()
     if not proxies:
         await call.message.edit_text("لا توجد بروكسيات.", reply_markup=back_admin())
@@ -1276,8 +1196,7 @@ async def admin_list_proxies(call: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == 'admin:broadcast')
 async def admin_broadcast_start(call: CallbackQuery, state: FSMContext):
-    if not await ensure_admin_access(call, state):
-        return
+    if not await ensure_admin_access(call, state): return
     await state.set_state(AdminFlow.waiting_broadcast)
     count = len(list(db.all_active_users()))
     await call.message.edit_text(
@@ -1301,16 +1220,14 @@ async def admin_broadcast(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         f"📢 <b>تم الإرسال</b>\n\n"
-        f"✅ نجح: <b>{sent}</b>\n"
-        f"❌ فشل: <b>{failed}</b>",
+        f"✅ نجح: <b>{sent}</b>\n❌ فشل: <b>{failed}</b>",
         reply_markup=admin_panel()
     )
 
 
 @dp.callback_query(F.data == 'admin:settings')
 async def admin_settings(call: CallbackQuery, state: FSMContext):
-    if not await ensure_admin_access(call, state):
-        return
+    if not await ensure_admin_access(call, state): return
     dashboard_port = os.environ.get('PORT', '5000')
     await call.message.edit_text(
         f"⚙️ <b>إعدادات البوت</b>\n\n"
@@ -1337,9 +1254,6 @@ async def main():
     Path('proxies.txt').touch(exist_ok=True)
 
     print(f"🚀 {BOT_NAME} يعمل الآن...")
-    print(f"🔑 الأمر السري: /{ADMIN_CMD}  |  كلمة المرور: {ADMIN_PASS}")
-    print(f"📌 البوابات: {', '.join(GATE_NAMES.keys())}")
-
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 

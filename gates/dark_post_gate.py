@@ -8,7 +8,7 @@ from keyboards import (
 from states import AdObjectives, GateConstants, AdGateStates
 from gates.base_gate import BaseGate
 from services.facebook_api import run_dark_post_ad, run_dark_post_ad_then_pause
-from ui_helpers import reply_ui, clear_keep
+from ui_helpers import reply_ui, clear_keep, update_ui_call
 
 
 def _result_text(result: dict, gate_name: str) -> str:
@@ -32,18 +32,16 @@ class DarkPostGate(BaseGate):
     async def enter(self, call: CallbackQuery, state: FSMContext, config: dict):
         await state.update_data(gate_id=self.gate_id, gate_type=self.gate_type, gate_name=self.gate_name)
         await state.set_state(AdGateStates.waiting_proxy)
-        await call.message.edit_caption(
-            caption=(
-                f"🚪 <b>{self.gate_name}</b>\n\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "📋 <b>خطوات العمل:</b>\n"
-                "1️⃣ البروكسي\n2️⃣ الكوكيز\n3️⃣ Account ID\n4️⃣ Page ID\n"
-                "5️⃣ الصورة (اختياري)\n6️⃣ نص الإعلان\n"
-                "7️⃣ الهدف + الأوديانس\n8️⃣ الميزانية والأيام\n9️⃣ مراجعة وتشغيل\n\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "🔽 <b>الخطوة 1:</b> اختر البروكسي"
-            ),
-            reply_markup=proxy_selection_keyboard()
+        await update_ui_call(call, state,
+            f"🚪 <b>{self.gate_name}</b>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "📋 <b>خطوات العمل:</b>\n"
+            "1️⃣ البروكسي\n2️⃣ الكوكيز\n3️⃣ Account ID\n4️⃣ Page ID\n"
+            "5️⃣ الصورة (اختياري)\n6️⃣ نص الإعلان\n"
+            "7️⃣ الهدف + الأوديانس\n8️⃣ الميزانية والأيام\n9️⃣ مراجعة وتشغيل\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🔽 <b>الخطوة 1:</b> اختر البروكسي",
+            proxy_selection_keyboard()
         )
 
     async def handle_proxy_auto(self, call: CallbackQuery, state: FSMContext, proxy: str = None):
@@ -52,25 +50,21 @@ class DarkPostGate(BaseGate):
             return
         await state.update_data(proxy=proxy)
         await state.set_state(AdGateStates.waiting_cookies)
-        await call.message.edit_caption(
-            caption=(
-                "✅ <b>البروكسي:</b> تم اختيار بروكسي من البوت تلقائياً\n\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "🔽 <b>الخطوة 2:</b> أرسل كوكيز فيسبوك"
-            ),
-            reply_markup=back_to_proxy()
+        await update_ui_call(call, state,
+            "✅ <b>البروكسي:</b> تم اختيار بروكسي من البوت تلقائياً\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🔽 <b>الخطوة 2:</b> أرسل كوكيز فيسبوك",
+            back_to_proxy()
         )
 
     async def handle_proxy_skip(self, call: CallbackQuery, state: FSMContext):
         await state.update_data(proxy=None)
         await state.set_state(AdGateStates.waiting_cookies)
-        await call.message.edit_caption(
-            caption=(
-                "✅ <b>تخطي البروكسي</b>\n\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "🔽 <b>الخطوة 2:</b> أرسل كوكيز فيسبوك"
-            ),
-            reply_markup=back_to_proxy()
+        await update_ui_call(call, state,
+            "✅ <b>تخطي البروكسي</b>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🔽 <b>الخطوة 2:</b> أرسل كوكيز فيسبوك",
+            back_to_proxy()
         )
 
     async def handle_proxy_custom(self, message: Message, state: FSMContext):
@@ -81,8 +75,7 @@ class DarkPostGate(BaseGate):
         proxy = message.text.strip() if message.text.strip().lower() != 'skip' else None
         await state.update_data(proxy=proxy)
         await state.set_state(AdGateStates.waiting_cookies)
-        await reply_ui(
-            message.bot, state, message.chat.id,
+        await reply_ui(message.bot, state, message.chat.id,
             f"✅ <b>البروكسي:</b> {proxy or 'بدون'}\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "🔽 <b>الخطوة 2:</b> أرسل كوكيز فيسبوك",
@@ -91,10 +84,7 @@ class DarkPostGate(BaseGate):
 
     async def handle_proxy_back(self, call: CallbackQuery, state: FSMContext):
         await state.set_state(AdGateStates.waiting_proxy)
-        await call.message.edit_caption(
-            caption="🔽 <b>اختر البروكسي</b>",
-            reply_markup=proxy_selection_keyboard()
-        )
+        await update_ui_call(call, state, "🔽 <b>اختر البروكسي</b>", proxy_selection_keyboard())
 
     async def handle_cookies(self, message: Message, state: FSMContext):
         is_valid, error = self.validate_cookies(message.text)
@@ -103,8 +93,7 @@ class DarkPostGate(BaseGate):
             return
         await state.update_data(cookies=message.text.strip())
         await state.set_state(AdGateStates.waiting_ad_account_id)
-        await reply_ui(
-            message.bot, state, message.chat.id,
+        await reply_ui(message.bot, state, message.chat.id,
             "✅ <b>تم حفظ الكوكيز</b>\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "🔽 <b>الخطوة 3:</b> أدخل Ad Account ID",
@@ -118,8 +107,7 @@ class DarkPostGate(BaseGate):
             return
         await state.update_data(ad_account_id=result)
         await state.set_state(AdGateStates.waiting_page_id)
-        await reply_ui(
-            message.bot, state, message.chat.id,
+        await reply_ui(message.bot, state, message.chat.id,
             f"✅ <b>Account ID:</b> {result}\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "🔽 <b>الخطوة 4:</b> أدخل Page ID",
@@ -133,8 +121,7 @@ class DarkPostGate(BaseGate):
             return
         await state.update_data(page_id=result)
         await state.set_state(AdGateStates.waiting_image)
-        await reply_ui(
-            message.bot, state, message.chat.id,
+        await reply_ui(message.bot, state, message.chat.id,
             f"✅ <b>Page ID:</b> {result}\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "🔽 <b>الخطوة 5:</b> أرسل صورة الإعلان\n\n"
@@ -150,8 +137,7 @@ class DarkPostGate(BaseGate):
             return
         await state.update_data(image_path=file_path)
         await state.set_state(AdGateStates.waiting_caption)
-        await reply_ui(
-            message.bot, state, message.chat.id,
+        await reply_ui(message.bot, state, message.chat.id,
             "✅ <b>تم استقبال الصورة</b>\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "🔽 <b>الخطوة 6:</b> أدخل نص الإعلان (Caption)\n\n"
@@ -162,13 +148,11 @@ class DarkPostGate(BaseGate):
     async def handle_image_skip(self, call: CallbackQuery, state: FSMContext):
         await state.update_data(image_path=None)
         await state.set_state(AdGateStates.waiting_caption)
-        await call.message.edit_caption(
-            caption=(
-                "⏭ <b>تم تخطي الصورة</b>\n\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "🔽 <b>الخطوة 6:</b> أدخل نص الإعلان (Caption)"
-            ),
-            reply_markup=back_home()
+        await update_ui_call(call, state,
+            "⏭ <b>تم تخطي الصورة</b>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🔽 <b>الخطوة 6:</b> أدخل نص الإعلان (Caption)",
+            back_home()
         )
         await call.answer()
 
@@ -178,10 +162,7 @@ class DarkPostGate(BaseGate):
             self.cleanup_temp_files(data.get('image_path'))
             await state.update_data(image_path=None)
         await state.set_state(AdGateStates.waiting_image)
-        await call.message.edit_caption(
-            caption="🔄 <b>أعد إرسال الصورة</b>",
-            reply_markup=image_received_keyboard()
-        )
+        await update_ui_call(call, state, "🔄 <b>أعد إرسال الصورة</b>", image_received_keyboard())
         await call.answer()
 
     async def handle_caption(self, message: Message, state: FSMContext):
@@ -191,8 +172,7 @@ class DarkPostGate(BaseGate):
             return
         await state.update_data(caption=message.text.strip())
         await state.set_state(AdGateStates.waiting_objective)
-        await reply_ui(
-            message.bot, state, message.chat.id,
+        await reply_ui(message.bot, state, message.chat.id,
             "✅ <b>تم حفظ النص</b>\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "🔽 <b>الخطوة 7:</b> اختر هدف الإعلان",
@@ -203,14 +183,12 @@ class DarkPostGate(BaseGate):
         objective = call.data.split(':', 1)[1]
         await state.update_data(objective=objective)
         await state.set_state(AdGateStates.waiting_audience_id)
-        await call.message.edit_caption(
-            caption=(
-                f"✅ <b>الهدف:</b> {AdObjectives.get_display_name(objective)}\n\n"
-                "━━━━━━━━━━━━━━━━━━━━\n"
-                "🔽 <b>الخطوة 8:</b> أدخل Audience ID\n"
-                "(اختياري — اكتب skip للتخطي)"
-            ),
-            reply_markup=back_home()
+        await update_ui_call(call, state,
+            f"✅ <b>الهدف:</b> {AdObjectives.get_display_name(objective)}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🔽 <b>الخطوة 8:</b> أدخل Audience ID\n"
+            "(اختياري — اكتب skip للتخطي)",
+            back_home()
         )
         await call.answer()
 
@@ -221,8 +199,7 @@ class DarkPostGate(BaseGate):
             return
         await state.update_data(audience_id=result)
         await state.set_state(AdGateStates.waiting_daily_budget)
-        await reply_ui(
-            message.bot, state, message.chat.id,
+        await reply_ui(message.bot, state, message.chat.id,
             f"✅ <b>Audience ID:</b> {result or 'افتراضي'}\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"🔽 <b>الخطوة 9:</b> أدخل الميزانية اليومية (USD)\n"
@@ -237,8 +214,7 @@ class DarkPostGate(BaseGate):
             return
         await state.update_data(daily_budget=result)
         await state.set_state(AdGateStates.waiting_days)
-        await reply_ui(
-            message.bot, state, message.chat.id,
+        await reply_ui(message.bot, state, message.chat.id,
             f"✅ <b>الميزانية:</b> {result}$\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             f"🔽 <b>الخطوة 10:</b> أدخل عدد الأيام\n"
@@ -259,19 +235,17 @@ class DarkPostGate(BaseGate):
     async def handle_confirm(self, call: CallbackQuery, state: FSMContext):
         if call.data == 'confirm:yes':
             await state.set_state(AdGateStates.waiting_activate)
-            await call.message.edit_caption(
-                caption=(
-                    "🚀 <b>جاهز للتشغيل!</b>\n\n"
-                    "━━━━━━━━━━━━━━━━━━━━\n"
-                    "اختر طريقة النشر:"
-                ),
-                reply_markup=activate_or_back_keyboard()
+            await update_ui_call(call, state,
+                "🚀 <b>جاهز للتشغيل!</b>\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "اختر طريقة النشر:",
+                activate_or_back_keyboard()
             )
         else:
             data = await state.get_data()
             self.cleanup_temp_files(data.get('image_path'))
             await clear_keep(state)
-            await call.message.edit_caption(caption="❌ <b>تم الإلغاء</b>", reply_markup=back_home())
+            await update_ui_call(call, state, "❌ <b>تم الإلغاء</b>", back_home())
         await call.answer()
 
     async def handle_activate(self, call: CallbackQuery, state: FSMContext):
@@ -281,37 +255,32 @@ class DarkPostGate(BaseGate):
         if action not in ('activate:run', 'activate:run_pause'):
             self.cleanup_temp_files(data.get('image_path'))
             await clear_keep(state)
-            await call.message.edit_caption(caption="🏠 <b>تم الإلغاء</b>", reply_markup=back_home())
+            await update_ui_call(call, state, "🏠 <b>تم الإلغاء</b>", back_home())
             await call.answer()
             return
 
         pause = action == 'activate:run_pause'
         label = "⏸ نشر ثم إيقاف" if pause else "🟢 نشر نشط"
 
-        await call.message.edit_caption(
-            caption=(
-                f"⏳ <b>جاري إنشاء الدارك بوست... ({label})</b>\n\n"
-                "📤 رفع الصورة وإنشاء الإعلان...\nيرجى الانتظار"
-            )
+        await update_ui_call(call, state,
+            f"⏳ <b>جاري إنشاء الدارك بوست... ({label})</b>\n\n"
+            "📤 رفع الصورة وإنشاء الإعلان...\nيرجى الانتظار"
         )
         try:
             fn     = run_dark_post_ad_then_pause if pause else run_dark_post_ad
             result = await fn(data)
             self.cleanup_temp_files(data.get('image_path'))
             if result['success']:
-                await call.message.edit_caption(
-                    caption=_result_text(result, self.gate_name),
-                    reply_markup=back_home()
-                )
+                await reply_ui(call.bot, state, call.message.chat.id,
+                    _result_text(result, self.gate_name), back_home())
             else:
-                await call.message.edit_caption(
-                    caption=(
-                        f"❌ <b>فشل في خطوة: {result.get('step', '?')}</b>\n\n"
-                        f"🔴 {result.get('error', 'خطأ غير معروف')}"
-                    ),
-                    reply_markup=back_home()
+                await reply_ui(call.bot, state, call.message.chat.id,
+                    f"❌ <b>فشل في خطوة: {result.get('step', '?')}</b>\n\n"
+                    f"🔴 {result.get('error', 'خطأ غير معروف')}",
+                    back_home()
                 )
         except Exception as e:
             self.cleanup_temp_files(data.get('image_path'))
-            await call.message.edit_caption(caption=f"❌ <b>خطأ:</b>\n{e}", reply_markup=back_home())
+            await reply_ui(call.bot, state, call.message.chat.id,
+                f"❌ <b>خطأ:</b>\n{e}", back_home())
         await call.answer()
