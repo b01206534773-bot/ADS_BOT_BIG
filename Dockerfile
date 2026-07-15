@@ -24,6 +24,8 @@ RUN apt-get update && apt-get install -y \
     libasound2 \
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
+    libdbus-1-3 \
+    && python -m playwright install-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Playwright Chromium
