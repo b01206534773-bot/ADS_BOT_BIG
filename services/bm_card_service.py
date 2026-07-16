@@ -36,6 +36,37 @@ DEVICE_PROFILES = [
 ]
 
 
+def _clean_facebook_response(text: str) -> str:
+    """
+    إزالة الحماية الأمنية (JS security guard) التي يضيفها فيسبوك
+    في بداية استجابات GraphQL/API مثل: for (;;);{"..."}
+
+    تدعم أيضاً بعض الأشكال الأخرى المعروفة لهذه الحماية.
+    """
+    if not text:
+        return text
+
+    cleaned = text.strip()
+
+    known_guards = (
+        'for (;;);',
+        'for(;;);',
+        ")]}'",
+        ")]}',",
+    )
+    for guard in known_guards:
+        if cleaned.startswith(guard):
+            cleaned = cleaned[len(guard):]
+            break
+    else:
+        # في حال وجود حماية غير معروفة، نبحث عن أول '{' أو '[' كبداية للـ JSON الفعلي
+        match = re.search(r'[\{\[]', cleaned)
+        if match and match.start() > 0:
+            cleaned = cleaned[match.start():]
+
+    return cleaned.strip()
+
+
 def _parse_cookies(s: str) -> dict:
     """
     تحليل الكوكيز من أي تنسيق:
@@ -625,7 +656,8 @@ class BMCardService:
                 if resp.status_code >= 500:
                     return {'success': False, 'error': f'خطأ الخادم ({resp.status_code})'}
                 try:
-                    data = resp.json()
+                    cleaned_text = _clean_facebook_response(resp.text)
+                    data = json.loads(cleaned_text)
                     return {'success': True, 'data': data}
                 except Exception:
                     return {'success': False, 'error': f'رد غير JSON ({resp.status_code}): {resp.text[:200]}'}
