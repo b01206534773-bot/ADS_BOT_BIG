@@ -29,7 +29,23 @@ class DB:
         self._connect()
         self.init()
 
+    def _ensure_connection(self):
+        """Reconnect if the connection has been closed or lost."""
+        try:
+            if self.backend == 'postgres':
+                self.conn.cursor().execute('SELECT 1')
+            else:
+                self.conn.cursor().execute('SELECT 1')
+        except Exception:
+            print('DB connection lost, reconnecting…')
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+            self._connect()
+
     def _execute(self, query: str, params=()):
+        self._ensure_connection()
         cursor = self.conn.cursor()
         cursor.execute(normalize_query(query, self.backend), params)
         return cursor
