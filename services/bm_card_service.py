@@ -764,6 +764,7 @@ async def warm_bm_cards(cookies: str, bm_id: str, ad_id: str,
                         cards: List[dict], card_ids: List[str],
                         interval_secs: int,
                         proxy: Optional[str] = None) -> Dict[str, Any]:
+    # تحقق أولي من الجلسة
     svc = BMCardService(cookies, proxy)
     r = await svc.fetch_dtsg()
     if not r['success']:
@@ -771,13 +772,35 @@ async def warm_bm_cards(cookies: str, bm_id: str, ad_id: str,
 
     id_to_card = {c.get('credential_id', ''): c for c in cards}
     results = []
-    for cid in card_ids:
+    for i, cid in enumerate(card_ids):
         card = id_to_card.get(cid, {})
         name = card.get('card_association_name', 'Card')
         last4 = card.get('last_four_digits', '****')
         label = f"{name} •••• {last4}"
 
+        # أعد جلب DTSG لكل بطاقة بعد الأولى لتجنب field_exception
+        if i > 0:
+            svc = BMCardService(cookies, proxy)
+            refresh = await svc.fetch_dtsg()
+            if not refresh['success']:
+                results.append({
+                    'label': label,
+                    'success': False,
+                    'error': 'فشل تجديد الجلسة: ' + refresh.get('error', ''),
+                })
+                if interval_secs > 0 and cid != card_ids[-1]:
+                    await asyncio.sleep(interval_secs)
+                continue
+
+        # محاولة التسميع مع retry واحدة عند field_exception
         res = await svc.make_default(bm_id, ad_id, cid)
+        if not res['success'] and 'field_exception' in res.get('error', '').lower():
+            await asyncio.sleep(2)
+            svc2 = BMCardService(cookies, proxy)
+            r2 = await svc2.fetch_dtsg()
+            if r2['success']:
+                res = await svc2.make_default(bm_id, ad_id, cid)
+
         results.append({
             'label': label,
             'success': res['success'],
